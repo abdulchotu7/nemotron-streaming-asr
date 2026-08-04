@@ -1,26 +1,56 @@
-from mlx_audio.stt import load
 import sounddevice as sd
+from queue import Queue
 
-model = load("mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit")
-samplerate = 16000
-channels = 1
-
-# auto language detection (default)
-# print(model.generate("/Users/abdulrahim/Downloads/nemotron/linus-original-demo_4bucvKgI.wav").text)
-# result = model.generate("/Users/abdulrahim/Downloads/nemotron/linus-original-demo_4bucvKgI.mp3").text
+from mlx_audio.stt import load
+from streaming_session import NemotronStreamingSession
 
 
-for r in model.stream_generate("/Users/abdulrahim/Downloads/nemotron/linus-original-demo_4bucvKgI.wav", language="en-US"):
-    print(r.text)
+RATE = 16000
+BLOCK = 320  # 20 ms
 
-stream = sd.InputStream(
-    samplerate=samplerate,
-    channels=channels,
-    dtype="float32",
-    blocksize=320,   # 20 ms
-)
+audio_queue = Queue()
 
-stream.start()
 
-print(type(model))
-print(model.__class__)
+def callback(indata, frames, time, status):
+    if status:
+        print(status)
+
+    audio_queue.put(indata.copy())
+
+
+def main():
+    model = load("mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit")
+
+    session = NemotronStreamingSession(
+        model,
+        language="en-US",
+    )
+
+    last_text = ""
+
+    with sd.InputStream(
+        samplerate=RATE,
+        channels=1,
+        dtype="float32",
+        blocksize=BLOCK,
+        callback=callback,
+    ):
+        print("Listening... Ctrl+C to stop")
+
+        while True:
+            pcm = audio_queue.get()
+
+            session.feed(pcm)
+
+            result = session.step()
+
+            if result is None:
+                continue
+
+            if result.text != last_text:
+                print(result.text)
+                last_text = result.text
+
+
+if __name__ == "__main__":
+    main()
