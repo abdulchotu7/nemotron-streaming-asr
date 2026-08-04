@@ -21,6 +21,9 @@ dependencies = [
     "mlx-audio @ git+https://github.com/Blaizzy/mlx-audio.git@2c9461f5d8315fa8e7013ab2729495b2bb83d384",
     "numpy>=1.26",
     "sounddevice>=0.5",
+    "pynput>=1.7",
+    "pyobjc-framework-cocoa>=10.0",  # NSPasteboard (text insertion)
+    "pyobjc-framework-quartz>=10.0",  # CGEventPost ⌘V (text insertion)
 ]
 
 [project.optional-dependencies]
@@ -30,6 +33,7 @@ test = ["pytest>=8.0"]
 [project.scripts]
 nemotron-mic = "nemotron_streaming_asr.apps.mic:main"
 nemotron-benchmark = "nemotron_streaming_asr.benchmark.runner:main"
+nemotron-dictation = "nemotron_streaming_asr.apps.dictation.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

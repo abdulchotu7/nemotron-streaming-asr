@@ -35,9 +35,16 @@ src/nemotron_streaming_asr/
 │   ├── stats.py           PerformanceStats (thread-safe collector, rolling/final reports)
 │   ├── system.py          CPU %, RSS, unified memory, MLX memory
 │   └── runner.py          StreamingBenchmark + CLI
-├── apps/mic.py            live microphone demo (+ LatencyProbe)
+├── apps/
+│   ├── mic.py             console live demo (+ LatencyProbe)
+│   └── dictation/         WhisperFlow-style desktop app (hotkey → mic → insert)
+│       ├── hotkey.py      GlobalHotkey (pynput, hold-to-talk)
+│       ├── microphone.py  MicrophoneRecorder (20 ms blocks)
+│       ├── transcript.py  LiveTranscriptController (newest cumulative text)
+│       ├── text_insertion.py  TextInsertionService (clipboard-safe ⌘V paste)
+│       └── app.py         DictationApp (session lifecycle + console UI)
 └── utils/tokenizer.py     standalone vocabulary helpers
-tests/                     pytest suite (equivalence, buffer, session, chunk config, stats, integration)
+tests/                     pytest suite (equivalence, buffer, session, chunk config, stats, dictation, integration)
 examples/                  legacy prototype
 data/                      sample audio (gitignored)
 ```
@@ -142,6 +149,60 @@ The mic demo's `LatencyProbe` reports the live user-perceived gap:
 ```
 
 (Disable with `--no-latency`; tune the energy threshold with `--vad-threshold`.)
+
+## Desktop dictation app (WhisperFlow-style)
+
+Hold the global hotkey (default **⌘⌥**), speak, release — the live cumulative
+transcript is shown while you talk and the final transcript is **pasted at the
+current cursor**:
+
+```bash
+nemotron-dictation
+# or: python -m nemotron_streaming_asr.apps.dictation
+
+nemotron-dictation --lookahead 3      # 320 ms chunks (snappier partials)
+nemotron-dictation --no-insert        # print only, no paste
+nemotron-dictation --hotkey cmd+shift # custom hotkey
+```
+
+```
+Ready. Hold ⌘⌥ (Cmd+Option) and speak; release to insert.
+Listening...
+I'm sure
+I'm sure you have a lot
+...
+✓ I'm sure you have a lot of questions and im gonna try to answer them all here like
+Ready for next recording.
+```
+
+Layering (each layer is swappable):
+
+```
+GlobalHotkey ──press/release──▶ DictationApp (recording worker)
+                                      │
+                                      ▼
+MicrophoneRecorder ──20 ms PCM──▶ NemotronStreamingSession (black box)
+                                      │
+                                      ▼
+LiveTranscriptController ──▶ UI (console now, overlay later)
+                                      │
+                                      ▼
+TextInsertionService (clipboard-safe ⌘V paste at cursor)
+```
+
+- A **fresh session is created per recording** (hotkey press) and destroyed
+  after the final text is inserted — no state leaks between recordings.
+- The transcript is cumulative: only the newest text is displayed; partials
+  overwrite the current line.
+- **Text insertion** uses native macOS APIs: `NSPasteboard` (clipboard
+  snapshot / set / restore) plus a synthetic **⌘V** via `CGEventPost`. The
+  user's clipboard is preserved and restored afterward.
+- **Permissions** (macOS System Settings):
+  - *Input Monitoring* — for the global hotkey (pynput listener),
+  - *Accessibility* — for the synthetic ⌘V paste (`CGEventPost`).
+  The app warns at startup if paste permission is missing.
+- Console UI is the default; the UI is a thin listener on
+  `LiveTranscriptController`, so a floating overlay can replace it later.
 
 ## Benchmarking
 
