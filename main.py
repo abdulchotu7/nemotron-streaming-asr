@@ -42,14 +42,10 @@ def main():
 
             session.feed(pcm)
 
-            result = session.step()
-
-            if result is None:
-                continue
-
-            if result.text != last_text:
-                print(result.text)
-                last_text = result.text
+            for result in session.step():
+                if result.text != last_text:
+                    print(result.text)
+                    last_text = result.text
 
 
 if __name__ == "__main__":
