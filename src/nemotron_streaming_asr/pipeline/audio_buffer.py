@@ -1,138 +1,30 @@
-"""Live microphone streaming ASR session.
+"""Bounded raw-PCM history that turns microphone audio into mel chunks.
 
-Pipeline:
-
-    Microphone
-        |
-        v
-    StreamingAudioBuffer      (bounded PCM history -> log-mel chunks)
-        |
-        v
-    StreamingEncoder          (stateful cache-aware FastConformer encoder)
-        |
-        v
-    StreamingDecoder          (stateful greedy RNN-T decoder)
-        |
-        v
-    NemotronStreamingSession  (thin orchestrator; owns language + reset)
+Responsibilities:
+  * accumulate incoming PCM without unbounded growth -- only the samples
+    still needed by future ``log_mel_spectrogram_frames()`` calls are kept
+    (the STFT window for ``next_mel_frame`` plus one preemphasis predecessor
+    sample, floored to a hop boundary),
+  * track global frame/sample offsets so the trimmed storage still yields
+    bit-identical mel chunks to offline extraction,
+  * emit native ``(1, chunk_mel, features)`` mel chunks for every complete
+    native chunk -- a chunk is only emitted once the STFT window of its
+    last mel frame is fully available, so the mel values match offline
+    extraction exactly (no incremental zero-padding).
 """
 
 import logging
 from collections import deque
 from time import perf_counter_ns
 
-import numpy as np
 import mlx.core as mx
+import numpy as np
 
 from mlx_audio.stt.models.nemotron_asr.audio import (
     log_mel_spectrogram_frames,
 )
 
-from streaming_encoder import StreamingEncoder
-from streaming_decoder import StreamingDecoder
-
 logger = logging.getLogger(__name__)
-
-
-class NemotronStreamingSession:
-    """Thin orchestrator connecting audio buffer, encoder and decoder.
-
-    Owns the prompt ``language`` and the three pipeline stages. Raw mono PCM is
-    fed in with ``feed()``; ``step()`` streams cumulative :class:`AlignedResult`
-    objects out as complete native chunks become ready. ``reset()`` restarts the
-    whole pipeline (push-to-talk) without reloading the model.
-
-        session.feed(pcm)
-            |
-            v
-        StreamingAudioBuffer
-            |
-            v
-        for mel in get_ready_mel_chunks():
-            for prompted in encoder.feed(mel, language):
-                result = decoder.feed(prompted)
-                if result:
-                    yield result
-    """
-
-    def __init__(self, model, language="en-US", stats=None):
-        self.model = model
-        self.language = language
-        # Optional benchmark instrumentation. None or disabled -> zero impact.
-        self._stats = stats
-        self._bench = stats is not None and stats.enabled
-
-        self.audio = StreamingAudioBuffer(model, stats=stats)
-        self.encoder = StreamingEncoder(model, stats=stats)
-        self.decoder = StreamingDecoder(model, stats=stats)
-
-    def feed(self, pcm):
-        """Append raw mono PCM (float32) to the audio buffer.
-
-        When benchmarking, records the audio-buffer feed duration and the PCM
-        arrival timestamp (anchor for end-to-end / token latency).
-        """
-        t0 = perf_counter_ns() if self._bench else None
-        self.audio.feed(pcm)
-        if t0 is not None:
-            now = perf_counter_ns()
-            self._stats.record_audio_feed(now - t0)
-            self._stats.record_arrival(now)
-
-    def step(self):
-        """Process every mel chunk that is currently ready.
-
-        Yields one cumulative AlignedResult per prompted encoder chunk. When
-        benchmarking, records one ``step`` sample per call plus an end-to-end /
-        token-latency sample per emitted result.
-        """
-        t0 = perf_counter_ns() if self._bench else None
-        try:
-            for mel in self.audio.get_ready_mel_chunks():
-                for prompted in self.encoder.feed(mel, self.language):
-                    result = self.decoder.feed(prompted)
-                    if result:
-                        if t0 is not None:
-                            self._stats.record_result(perf_counter_ns(), result)
-                        yield result
-        finally:
-            if t0 is not None:
-                self._stats.record_step(perf_counter_ns() - t0)
-
-    def finish(self):
-        """Flush all remaining audio and encoder state at end-of-utterance.
-
-        Emits the sub-chunk mel tail still held in the audio buffer, then
-        performs the encoder's final ``is_final=True`` flush. Together these
-        transcribe every mel frame, matching the reference stream end.
-        """
-        t0 = perf_counter_ns() if self._bench else None
-        try:
-            for mel in self.audio.get_tail_mel_chunks():
-                for prompted in self.encoder.feed(mel, self.language):
-                    result = self.decoder.feed(prompted)
-                    if result:
-                        if t0 is not None:
-                            self._stats.record_result(perf_counter_ns(), result)
-                        yield result
-            for prompted in self.encoder.finish(self.language):
-                result = self.decoder.feed(prompted)
-                if result:
-                    if t0 is not None:
-                        self._stats.record_result(perf_counter_ns(), result)
-                    yield result
-        finally:
-            if t0 is not None:
-                self._stats.record_step(perf_counter_ns() - t0)
-
-    def reset(self):
-        """Clear all streaming state; the loaded model is kept.
-
-        Safe to reuse the session for a new utterance (push-to-talk).
-        """
-        self.audio.reset()
-        self.encoder.reset()
-        self.decoder.reset()
 
 
 class StreamingAudioBuffer:
@@ -151,13 +43,16 @@ class StreamingAudioBuffer:
         extraction exactly (no incremental zero-padding),
     """
 
-    def __init__(self, model, stats=None):
+    def __init__(self, model, stats=None, att_context_size=None):
         self.config = model.preprocessor_config
         # Optional benchmark instrumentation. None or disabled -> zero impact.
         self._stats = stats
         self._bench = stats is not None and stats.enabled
 
-        right_context = model.default_att_context_size[1]
+        # Latency operating point (NVIDIA model card): att_context_size = [left,
+        # right] in 80 ms subsampled frames; chunk = right+1 frames.
+        acs = list(att_context_size or model.default_att_context_size)
+        right_context = int(acs[1])
         subsampling = model.encoder.args.subsampling_factor
 
         # Native chunk size expected by stream_encode_chunks()
@@ -324,12 +219,11 @@ class StreamingAudioBuffer:
             self._trim()
 
         waveform = mx.array(self._contiguous())
-        hop = self.config.hop_length
 
         total = self.total_samples
         next_mel_frame = self.next_mel_frame
         trim_frames = self._trim_frames
-        available = total // hop + 1
+        available = total // self.config.hop_length + 1
         remaining = available - next_mel_frame
         if remaining <= 0:
             return

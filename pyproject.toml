@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nemotron-streaming-asr"
+version = "0.1.0"
+description = "Real-time offline streaming ASR engine for NVIDIA Nemotron 3.5 (MLX) with a production benchmarking framework"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "UNLICENSED" }
+authors = [{ name = "nemotron-streaming-asr developers" }]
+keywords = ["asr", "streaming", "mlx", "apple-silicon", "nemotron", "rnnt"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: MacOS",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    "mlx>=0.32.0",
+    "mlx-audio @ git+https://github.com/Blaizzy/mlx-audio.git@2c9461f5d8315fa8e7013ab2729495b2bb83d384",
+    "numpy>=1.26",
+    "sounddevice>=0.5",
+]
+
+[project.optional-dependencies]
+benchmark = ["psutil>=5.9"]  # optional: current RSS + finer CPU accounting
+test = ["pytest>=8.0"]
+
+[project.scripts]
+nemotron-mic = "nemotron_streaming_asr.apps.mic:main"
+nemotron-benchmark = "nemotron_streaming_asr.benchmark.runner:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "integration: needs the real HuggingFace model and the sample WAV (data/)",
+    "slow: multi-second benchmark harness run",
+]
