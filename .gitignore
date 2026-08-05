@@ -1,8 +1,23 @@
-.venv
-linus*
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
 build/
 dist/
+
+# Virtualenvs
+.venv
+venv/
+
+# macOS
+.DS_Store
+
+# Local sample audio (see README "data/ sample audio (gitignored)")
+data/
+
+# Reasonix session state (auto-generated)
+reasonix.toml
+
+# Sample WAVs wherever they land
+linus*

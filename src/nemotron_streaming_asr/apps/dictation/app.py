@@ -1,8 +1,8 @@
-"""WhisperFlow-style hold-to-talk dictation around the streaming ASR engine.
+"""WhisperFlow-style dictation around the streaming ASR engine (tap-to-toggle).
 
 Layering::
 
-    GlobalHotkey ──press/release──▶ DictationApp (recording worker)
+    GlobalHotkey ──tap (toggle)──▶ DictationApp (recording worker)
                                          │
                                          ▼
     MicrophoneRecorder ──20 ms PCM──▶ NemotronStreamingSession (black box)
@@ -13,13 +13,15 @@ Layering::
                                          ▼
                                  TextInsertionService (paste at cursor)
 
-User workflow: hold ⌘⌥ (Cmd+Option), speak, release -> the final transcript is
-pasted at the cursor. A fresh session is created per recording, so no state
-leaks between recordings.
+User workflow: tap the hotkey (default: right **Option ⌥**) to start recording,
+speak, then tap it again to stop — the final transcript is pasted at the
+cursor. A fresh session is created per recording, so no state leaks between
+recordings.
 
 Usage:
     python -m nemotron_streaming_asr.apps.dictation
     nemotron-dictation --lookahead 3 --no-insert
+    nemotron-dictation --hotkey cmd+option --no-toggle   # classic hold-to-talk
 """
 
 from __future__ import annotations
@@ -69,8 +71,8 @@ class ConsoleUI:
 class DictationApp:
     """Coordinates hotkey, microphone, ASR session, transcript and insertion.
 
-    One ``NemotronStreamingSession`` is created per recording (hotkey press)
-    and destroyed after the final text is inserted (hotkey release + finish),
+    One ``NemotronStreamingSession`` is created per recording (hotkey tap)
+    and destroyed after the final text is inserted (stop tap + finish),
     so no streaming state leaks between recordings.
     """
 
@@ -94,7 +96,9 @@ class DictationApp:
         self._insertion = TextInsertionService()
 
         self.transcript = LiveTranscriptController(on_update=self._ui.on_partial)
-        self._hotkey = hotkey or PynputGlobalHotkey(modifiers=("cmd", "option"))
+        self._hotkey = hotkey or PynputGlobalHotkey(
+            modifiers=(), key="alt_r", toggle=True  # right Option, tap-to-toggle
+        )
         self._hotkey.on_press = self.start_recording
         self._hotkey.on_release = self.stop_recording
 
@@ -106,7 +110,9 @@ class DictationApp:
     # ------------------------------------------------------------- lifecycle
     def run(self) -> None:
         """Start the hotkey listener and block until interrupted."""
-        self._ui.status("Ready. Hold ⌘⌥ (Cmd+Option) and speak; release to insert.")
+        self._ui.status(
+            "Ready. Tap ⌥ (right Option) to start recording; tap again to stop and insert."
+        )
         if self.insert and not TextInsertionService.can_post_events():
             self._ui.status(
                 "⚠ Paste needs Accessibility permission: System Settings → "
@@ -125,7 +131,7 @@ class DictationApp:
             self._hotkey.stop()
 
     def start_recording(self) -> None:
-        """Hotkey pressed: create a fresh session and start capturing."""
+        """Hotkey pressed/tapped: create a fresh session and start capturing."""
         if self._recording:
             return
         self._recording = True
@@ -143,7 +149,7 @@ class DictationApp:
         self._worker.start()
 
     def stop_recording(self) -> None:
-        """Hotkey released: signal the worker to drain and finalize."""
+        """Hotkey released/tapped again: signal the worker to drain and finalize."""
         if self._recording:
             self._stop_event.set()
 
@@ -189,8 +195,8 @@ class DictationApp:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Hold-to-talk dictation: hold ⌘⌥, speak, release — the "
-        "transcript is pasted at your cursor.",
+        description="Tap-to-toggle dictation: tap the hotkey to start recording, "
+        "tap again to stop — the transcript is pasted at your cursor.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -207,8 +213,17 @@ def main() -> None:
     )
     parser.add_argument(
         "--hotkey",
-        default="cmd+option",
-        help="modifiers held to record, '+' separated (e.g. cmd+option, cmd+shift)",
+        default="alt_r",
+        help="hotkey spec: '+' separated; modifier names (cmd/ctrl/option/alt/"
+        "shift) plus one optional trigger key, e.g. alt_r (default, right "
+        "Option), f10, cmd+option, cmd+shift",
+    )
+    parser.add_argument(
+        "--toggle",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="tap the hotkey to start/stop recording (default). Use --no-toggle "
+        "for hold-to-talk: press to start, release to stop.",
     )
     parser.add_argument(
         "--no-insert",
@@ -223,7 +238,17 @@ def main() -> None:
     model = load(args.model)
     model.eval()
 
-    hotkey = PynputGlobalHotkey(modifiers=tuple(args.hotkey.split("+")))
+    parts = [p.strip().lower() for p in args.hotkey.split("+") if p.strip()]
+    modifier_names = {"cmd", "ctrl", "option", "alt", "shift"}
+    modifiers = [p for p in parts if p in modifier_names]
+    keys = [p for p in parts if p not in modifier_names]
+    if len(keys) > 1:
+        parser.error(f"--hotkey: expected at most one trigger key, got {keys}")
+    hotkey = PynputGlobalHotkey(
+        modifiers=tuple(modifiers),
+        key=keys[0] if keys else None,
+        toggle=args.toggle,
+    )
     app = DictationApp(
         model,
         language=args.language,

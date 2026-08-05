@@ -113,6 +113,64 @@ def test_hotkey_requires_trigger_key():
     assert events == ["press", "release"]
 
 
+def test_hotkey_toggle_right_option():
+    """Right Option tap-to-toggle: tap starts, tap again stops; repeat/release
+    alone never fires, and the left Option key does not trigger it."""
+    from pynput import keyboard
+
+    from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
+
+    events = []
+    hk = PynputGlobalHotkey(modifiers=(), key="alt_r", toggle=True)
+    hk.on_press = lambda: events.append("press")
+    hk.on_release = lambda: events.append("release")
+
+    hk._on_press(keyboard.Key.alt_r)  # first tap -> start
+    assert events == ["press"]
+    hk._on_press(keyboard.Key.alt_r)  # auto-repeat while held -> ignored
+    assert events == ["press"]
+    hk._on_release(keyboard.Key.alt_r)  # releasing alone never stops
+    assert events == ["press"]
+    hk._on_press(keyboard.Key.alt)  # left option is a different key -> ignored
+    assert events == ["press"]
+
+    hk._on_press(keyboard.Key.alt_r)  # second tap -> stop
+    assert events == ["press", "release"]
+    hk._on_release(keyboard.Key.alt_r)
+    hk._on_press(keyboard.Key.alt_r)  # third tap -> start again
+    assert events == ["press", "release", "press"]
+
+
+def test_hotkey_toggle_with_modifiers():
+    """Toggle also works with a modifier combo as long as a trigger key is set."""
+    from pynput import keyboard
+
+    from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
+
+    events = []
+    hk = PynputGlobalHotkey(modifiers=("cmd",), key="f10", toggle=True)
+    hk.on_press = lambda: events.append("press")
+    hk.on_release = lambda: events.append("release")
+
+    hk._on_press(keyboard.Key.cmd)  # modifier alone is not the trigger
+    assert events == []
+    hk._on_press(keyboard.Key.f10)  # combo complete -> start
+    assert events == ["press"]
+    hk._on_release(keyboard.Key.cmd)  # releasing a modifier does not stop
+    assert events == ["press"]
+    hk._on_release(keyboard.Key.f10)  # lift the trigger between taps
+    hk._on_press(keyboard.Key.cmd)  # re-hold combo...
+    hk._on_press(keyboard.Key.f10)  # ...and press trigger again -> stop
+    assert events == ["press", "release"]
+
+
+def test_hotkey_toggle_requires_trigger_key():
+    from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
+
+    with pytest.raises(ValueError):
+        PynputGlobalHotkey(modifiers=("option",), toggle=True)
+
+
 # -------------------------------------------------------------- text insertion
 def test_text_insertion_empty_guard():
     """Empty text must not touch the clipboard or post any key event."""

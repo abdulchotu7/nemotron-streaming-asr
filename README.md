@@ -38,7 +38,7 @@ src/nemotron_streaming_asr/
 ├── apps/
 │   ├── mic.py             console live demo (+ LatencyProbe)
 │   └── dictation/         WhisperFlow-style desktop app (hotkey → mic → insert)
-│       ├── hotkey.py      GlobalHotkey (pynput, hold-to-talk)
+│       ├── hotkey.py      GlobalHotkey (pynput, hold or tap-to-toggle)
 │       ├── microphone.py  MicrophoneRecorder (20 ms blocks)
 │       ├── transcript.py  LiveTranscriptController (newest cumulative text)
 │       ├── text_insertion.py  TextInsertionService (clipboard-safe ⌘V paste)
@@ -152,9 +152,9 @@ The mic demo's `LatencyProbe` reports the live user-perceived gap:
 
 ## Desktop dictation app (WhisperFlow-style)
 
-Hold the global hotkey (default **⌘⌥**), speak, release — the live cumulative
-transcript is shown while you talk and the final transcript is **pasted at the
-current cursor**:
+Tap the global hotkey (default: right **Option ⌥**) to start recording, speak,
+then tap it again to stop — the live cumulative transcript is shown while you
+talk and the final transcript is **pasted at the current cursor**:
 
 ```bash
 nemotron-dictation
@@ -162,11 +162,13 @@ nemotron-dictation
 
 nemotron-dictation --lookahead 3      # 320 ms chunks (snappier partials)
 nemotron-dictation --no-insert        # print only, no paste
-nemotron-dictation --hotkey cmd+shift # custom hotkey
+nemotron-dictation --hotkey f10       # custom trigger key (tap to toggle)
+nemotron-dictation --hotkey cmd+shift # modifier combo (tap to toggle)
+nemotron-dictation --hotkey cmd+option --no-toggle  # classic hold-to-talk
 ```
 
 ```
-Ready. Hold ⌘⌥ (Cmd+Option) and speak; release to insert.
+Ready. Tap ⌥ (right Option) to start recording; tap again to stop and insert.
 Listening...
 I'm sure
 I'm sure you have a lot
@@ -175,10 +177,15 @@ I'm sure you have a lot
 Ready for next recording.
 ```
 
+The hotkey spec is `+`-separated: modifier names (`cmd`/`ctrl`/`option`/`alt`/
+`shift`) plus at most one trigger key, e.g. `alt_r` (right Option), `f10`, or
+`cmd+option`. `alt_r`/`alt_l` distinguish right vs left Option; `--toggle`
+(default) taps to start/stop, `--no-toggle` switches to hold-to-talk.
+
 Layering (each layer is swappable):
 
 ```
-GlobalHotkey ──press/release──▶ DictationApp (recording worker)
+GlobalHotkey ──tap (toggle)──▶ DictationApp (recording worker)
                                       │
                                       ▼
 MicrophoneRecorder ──20 ms PCM──▶ NemotronStreamingSession (black box)
@@ -190,7 +197,7 @@ LiveTranscriptController ──▶ UI (console now, overlay later)
 TextInsertionService (clipboard-safe ⌘V paste at cursor)
 ```
 
-- A **fresh session is created per recording** (hotkey press) and destroyed
+- A **fresh session is created per recording** (hotkey tap) and destroyed
   after the final text is inserted — no state leaks between recordings.
 - The transcript is cumulative: only the newest text is displayed; partials
   overwrite the current line.
