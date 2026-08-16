@@ -134,3 +134,55 @@ def test_benchmark_instrumentation_zero_impact(tiny_model, seeded_audio):
     assert all(v > 0 for v in enabled.samples("end_to_end"))
     assert enabled.count("eval") > 0 and enabled.count("clear_cache") > 0
     assert enabled.count("tokens") > 0 and enabled.count("words") >= 0
+
+
+# ------------------------------------------------------------------- language
+def test_auto_language_switches_prompt(tiny_model, seeded_audio):
+    """In 'auto' prompt mode a detected language tag re-prompts the encoder
+    for the following chunks (first detection wins)."""
+    session = NemotronStreamingSession(tiny_model, language="auto")
+    assert session.detect_language is True
+
+    class StubDecoder:
+        """Feeds back a fake result and latches a language tag."""
+
+        def __init__(self):
+            self.detected_language = "en-US"
+            self.calls = 0
+
+        def feed(self, prompted):
+            self.calls += 1
+            return type("R", (), {"text": "hi", "sentences": []})()
+
+        def reset(self):
+            self.detected_language = None
+
+    session.decoder = StubDecoder()
+
+    # Feed enough audio for at least one full native chunk (112 mel frames).
+    for i in range(0, 60 * BLOCK, BLOCK):
+        session.feed(seeded_audio[i : i + BLOCK])
+    results = list(session.step())
+
+    assert results, "expected at least one prompted chunk"
+    assert session.decoder.calls == len(results)
+    assert session.language == "en-US", "prompt language must switch"
+
+    # Reset restores the configured prompt language.
+    session.reset()
+    assert session.language == "auto"
+    assert session.decoder.detected_language is None
+
+
+def test_detection_disabled_for_fixed_language(tiny_model):
+    """A fixed prompt language never switches, even if the decoder latches a
+    tag (the tag is still recorded for callers)."""
+    session = NemotronStreamingSession(tiny_model, language="en-US")
+    assert session.detect_language is False
+
+    session.decoder.detected_language = "fr-FR"
+    session._apply_detected_language()
+    assert session.language == "en-US"
+
+    session.reset()
+    assert session.language == "en-US"

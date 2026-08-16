@@ -55,6 +55,11 @@ class NemotronStreamingSession:
     def __init__(self, model, language="en-US", stats=None, att_context_size=None):
         self.model = model
         self.language = language
+        self._configured_language = language
+        # In "auto" prompt mode the model emits a language-ID token (e.g.
+        # "<en-US>") as it recognizes speech; the session then switches the
+        # encoder prompt to the detected language for the following chunks.
+        self.detect_language = language == "auto"
         # Latency operating point (model card): [left, right] in 80 ms frames;
         # chunk latency = (right + 1) * 80 ms. Defaults to the model's config.
         self.att_context_size = list(att_context_size or model.default_att_context_size)
@@ -90,6 +95,17 @@ class NemotronStreamingSession:
             self._stats.record_audio_feed(now - t0)
             self._stats.record_arrival(now)
 
+    def _apply_detected_language(self):
+        """Switch the encoder prompt language to the decoder's first detected
+        language tag (auto mode only; applies to chunks after detection)."""
+        if self.detect_language and self.decoder.detected_language is not None:
+            self.language = self.decoder.detected_language
+
+    @property
+    def detected_language(self):
+        """First language tag the decoder emitted (e.g. ``"en-US"``), or None."""
+        return self.decoder.detected_language
+
     def step(self):
         """Process every mel chunk that is currently ready.
 
@@ -102,6 +118,7 @@ class NemotronStreamingSession:
             for mel in self.audio.get_ready_mel_chunks():
                 for prompted in self.encoder.feed(mel, self.language):
                     result = self.decoder.feed(prompted)
+                    self._apply_detected_language()
                     if result:
                         if t0 is not None:
                             self._stats.record_result(perf_counter_ns(), result)
@@ -122,12 +139,14 @@ class NemotronStreamingSession:
             for mel in self.audio.get_tail_mel_chunks():
                 for prompted in self.encoder.feed(mel, self.language):
                     result = self.decoder.feed(prompted)
+                    self._apply_detected_language()
                     if result:
                         if t0 is not None:
                             self._stats.record_result(perf_counter_ns(), result)
                         yield result
             for prompted in self.encoder.finish(self.language):
                 result = self.decoder.feed(prompted)
+                self._apply_detected_language()
                 if result:
                     if t0 is not None:
                         self._stats.record_result(perf_counter_ns(), result)
@@ -141,6 +160,7 @@ class NemotronStreamingSession:
 
         Safe to reuse the session for a new utterance (push-to-talk).
         """
+        self.language = self._configured_language
         self.audio.reset()
         self.encoder.reset()
         self.decoder.reset()

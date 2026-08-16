@@ -25,9 +25,9 @@ Real-time offline streaming ASR for NVIDIA Nemotron 3.5 (RNNT) on Apple Silicon,
 - `pipeline/audio_buffer.py` — `StreamingAudioBuffer`: bounded PCM history, trims processed audio aggressively (~1.2 s STFT window).
 - `pipeline/encoder.py` — `StreamingEncoder`: stateful cache-aware FastConformer (attn/conv/mel caches). The stateless `stream_encode_chunks()` / `stream_encode()` reference impls are kept for regression tests — do not delete.
 - `pipeline/decoder.py` — `StreamingDecoder`: stateful greedy RNN-T.
-- `pipeline/session.py` — `NemotronStreamingSession`: orchestrator; `feed(pcm)` → `step()` per chunk (cumulative `AlignedResult`), `finish()` flushes the trailing partial, `reset()` starts a new utterance. Latency = `att_context_size=[56, lookahead]`, lookahead ∈ {0,1,3,6,13} (80 ms frames).
+- `pipeline/session.py` — `NemotronStreamingSession`: orchestrator; `feed(pcm)` → `step()` per chunk (cumulative `AlignedResult`), `finish()` flushes the trailing partial, `reset()` starts a new utterance. Latency = `att_context_size=[56, lookahead]`, lookahead ∈ {0,1,3,6,13} (80 ms frames). `language="auto"` enables live language detection: the decoder latches the first emitted `<xx-XX>` tag (`decoder.detected_language` / `session.detected_language`) and the session switches the encoder prompt for later chunks.
 - `benchmark/` — `PerformanceStats` (optional, zero-impact), `StreamingBenchmark` runner, system/memory metrics.
-- `apps/dictation/` — layered: `hotkey.py` (pynput, right-Option tap-to-toggle) → `app.py` (fresh session per recording) → `microphone.py` (20 ms blocks) → `transcript.py` (cumulative) → `text_insertion.py` (clipboard-safe ⌘V via `CGEventPost`).
+- `apps/dictation/` — layered: `hotkey.py` (pynput, right-Option tap-to-toggle) → `app.py` (fresh session per recording) → `microphone.py` (20 ms blocks) → `vad.py` (`EnergyVAD`, auto-stop after `stop_silence_s` of silence) → `transcript.py` (cumulative) → `text_insertion.py` (clipboard-safe ⌘V via `CGEventPost`); `overlay.py` (`OverlayUI`, floating NSPanel via AppKit, `--overlay`; text is queued from any thread and rendered by `tick()` on the main thread).
 
 ## Conventions
 
@@ -43,6 +43,9 @@ Real-time offline streaming ASR for NVIDIA Nemotron 3.5 (RNNT) on Apple Silicon,
 <!-- quick-add scratchpad: -->
 <!-- review/optimisations round: fixed dictation bugs (toggle requires modifiers; modifier-only hotkey CLI error; swallowed rapid stop->start tap), trim view pinning of fed buffers, lazy mel waveform conversion on no-op steps, LatencyProbe float64 copy; 4 regression tests. Pipeline math untouched (reference-identical). -->
 <!-- simplification round: hotkey is now toggle-only right Option (PynputGlobalHotkey(key="alt_r")); removed --hotkey/--toggle CLI flags, hold mode and modifier machinery; hotkey tests rewritten. -->
+<!-- mic demo: session.finish() flush on exit so Ctrl+C keeps the trailing partial chunk. -->
+<!-- gap-closing round: real-model integration + 6-min benchmark validated (RTF ~0.05-0.15, memory bounded; data/ WAV restored locally, gitignored); auto language detection (language="auto" -> decoder latches <xx-XX> tag, session re-prompts); EnergyVAD auto-stop (--no-auto-stop, --stop-silence); floating OverlayUI (--overlay); removed dead duplicate utils/tokenizer.py (upstream tok has the same helpers). -->
+<!-- benchmark note: 'GROWTH DETECTED: python_heap_bytes' is the stats collector's own token_latency bucket (1 sample/token, capped by max_samples), not a pipeline leak; all pipeline signals flat. -->
 
 ## Agent skills
 

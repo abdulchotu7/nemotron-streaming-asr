@@ -4,6 +4,8 @@ end-to-end recording lifecycle with a fake recorder (no microphone/hardware).
 
 import time
 
+import numpy as np
+
 
 def _result(text):
     class R:
@@ -138,6 +140,76 @@ def test_rapid_stop_then_start_is_not_swallowed(tiny_model):
     app.stop_recording()
     app._worker.join(timeout=10)
     assert app._recording is False
+
+
+def test_auto_stop_ends_recording(tiny_model):
+    """Speech followed by stop_silence_s of silence ends the recording
+    without any hotkey tap."""
+    from nemotron_streaming_asr.apps.dictation.app import DictationApp
+    from nemotron_streaming_asr.apps.dictation.vad import EnergyVAD
+
+    clock = {"t": 0.0}
+    loud = (np.random.default_rng(0).standard_normal(320) * 0.05).astype(
+        np.float32
+    )
+    silence = np.zeros(320, dtype=np.float32)
+    # ~0.24 s of speech (12 loud blocks, safely above min_speech_s) then
+    # 4 s of silence.
+    blocks = [loud] * 12 + [silence] * 200
+
+    class ClockRecorder:
+        def __init__(self):
+            self.started = self.stopped = False
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def close(self):
+            pass
+
+        def poll(self, timeout=0.02):
+            clock["t"] += timeout
+            return blocks.pop(0) if blocks else None
+
+        def drain(self):
+            return []
+
+    recorder = ClockRecorder()
+    ui_lines = []
+    quiet_ui = type("UI", (), {"status": ui_lines.append,
+                               "on_partial": lambda self, t: None})()
+    vad = EnergyVAD(now_fn=lambda: clock["t"])
+    app = DictationApp(tiny_model, language="en-US", recorder=recorder,
+                       insert=False, ui=quiet_ui, vad=vad)
+
+    app.start_recording()
+    app._worker.join(timeout=30)
+
+    assert app._recording is False  # ended without a stop tap
+    assert recorder.stopped
+    assert any("auto-stop" in line for line in ui_lines)
+
+
+def test_overlay_ui_shows_live_transcript():
+    """OverlayUI queues text from any thread and renders it on tick()."""
+    import pytest
+
+    from nemotron_streaming_asr.apps.dictation.overlay import OverlayUI
+
+    ui = OverlayUI()
+    if ui._ensure_panel()[0] is None:
+        pytest.skip("no window server available")
+    ui.on_partial("He hoped there would be stew")
+    ui.tick()
+    assert ui._label.stringValue() == "He hoped there would be stew"
+    ui.status("(auto-stop: silence detected)")
+    ui.on_partial("He hoped there would be stew, turnips and carrots")
+    ui.tick()
+    assert ui._label.stringValue() == "He hoped there would be stew, turnips and carrots"
+    ui._panel.orderOut_(None)
 
 
 # -------------------------------------------------------------- text insertion

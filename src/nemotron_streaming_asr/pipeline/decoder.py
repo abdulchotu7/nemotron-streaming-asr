@@ -56,6 +56,9 @@ class StreamingDecoder:
         self.decoder_hidden = None
         self.hypothesis: list[AlignedToken] = []
         self.global_time = 0
+        # First emitted language tag (e.g. "en-US") while streaming in "auto"
+        # prompt mode; used by the session to switch the encoder prompt.
+        self.detected_language = None
 
     def feed(self, prompted):
         """Greedy-decode one prompted encoder chunk (1, c, d).
@@ -87,6 +90,13 @@ class StreamingDecoder:
             if pred_token != self.blank_id:
                 self.last_token = pred_token
                 self.decoder_hidden = proposed_hidden
+                if self.detected_language is None and (
+                    0 <= pred_token < len(self.vocabulary)
+                    and tok.is_lang_tag(self.vocabulary[pred_token])
+                ):
+                    # Language-ID token (e.g. "<en-US>"), emitted in "auto"
+                    # prompt mode; latch the first one for the session.
+                    self.detected_language = self.vocabulary[pred_token][1:-1]
                 if not tok.is_special_token(self.last_token, self.vocabulary):
                     self.hypothesis.append(
                         AlignedToken(

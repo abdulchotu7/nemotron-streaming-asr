@@ -23,7 +23,6 @@ def test_submodules_import_cleanly():
         "nemotron_streaming_asr.benchmark.system",
         "nemotron_streaming_asr.benchmark.runner",
         "nemotron_streaming_asr.apps.mic",
-        "nemotron_streaming_asr.utils.tokenizer",
     ):
         assert importlib.import_module(module) is not None, module
 
