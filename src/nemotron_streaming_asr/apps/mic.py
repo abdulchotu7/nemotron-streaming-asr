@@ -132,6 +132,15 @@ def main():
 
     last_text = ""
 
+    def emit(result):
+        """Print new cumulative text and feed the latency probe."""
+        nonlocal last_text
+        if result.text != last_text:
+            print(result.text)
+            last_text = result.text
+            if probe is not None:
+                probe.on_text(result.text)
+
     with sd.InputStream(
         samplerate=RATE,
         channels=1,
@@ -143,20 +152,30 @@ def main():
         if probe is not None:
             probe.mic_started()
 
-        while True:
-            pcm = audio_queue.get()
+        try:
+            while True:
+                pcm = audio_queue.get()
 
-            if probe is not None:
-                probe.feed_pcm(pcm)
+                if probe is not None:
+                    probe.feed_pcm(pcm)
 
-            session.feed(pcm)
+                session.feed(pcm)
 
-            for result in session.step():
-                if result.text != last_text:
-                    print(result.text)
-                    last_text = result.text
-                    if probe is not None:
-                        probe.on_text(result.text)
+                for result in session.step():
+                    emit(result)
+        finally:
+            # Exit path: consume any blocks still queued, then flush the
+            # trailing partial chunk so the last ~1.12 s of audio is not lost.
+            while True:
+                try:
+                    pcm = audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+                session.feed(pcm)
+                for result in session.step():
+                    emit(result)
+            for result in session.finish():
+                emit(result)
 
 
 if __name__ == "__main__":
