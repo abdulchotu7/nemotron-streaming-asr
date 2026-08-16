@@ -36,7 +36,6 @@ from .hotkey import GlobalHotkey, PynputGlobalHotkey
 from .microphone import MicrophoneRecorder
 from .text_insertion import TextInsertionService
 from .transcript import LiveTranscriptController
-from .vad import EnergyVAD
 
 
 class ConsoleUI:
@@ -84,7 +83,6 @@ class DictationApp:
         recorder=None,
         insert: bool = True,
         ui=None,
-        vad=None,
     ):
         self.model = model
         self.language = language
@@ -94,8 +92,6 @@ class DictationApp:
         self._ui = ui or ConsoleUI()
         self._recorder = recorder or MicrophoneRecorder()
         self._insertion = TextInsertionService()
-        # Auto-stop VAD (None disables auto-stop; only the hotkey stops).
-        self._vad = vad
 
         self.transcript = LiveTranscriptController(on_update=self._ui.on_partial)
         self._hotkey = hotkey or PynputGlobalHotkey(key="alt_r")  # right Option
@@ -113,11 +109,6 @@ class DictationApp:
         self._ui.status(
             "Ready. Tap ⌥ (right Option) to start recording; tap again to stop and insert."
         )
-        if self._vad is not None:
-            self._ui.status(
-                f"Auto-stop: ends the recording after "
-                f"{self._vad.stop_silence_s:g}s of silence."
-            )
         if self.insert and not TextInsertionService.can_post_events():
             self._ui.status(
                 "⚠ Paste needs Accessibility permission: System Settings → "
@@ -125,13 +116,8 @@ class DictationApp:
             )
         self._hotkey.start()
         try:
-            # Drive the UI's event loop (overlay rendering) while idle.
-            tick = getattr(self._ui, "tick", None)
             while True:
-                if tick is not None:
-                    tick()
-                else:
-                    time.sleep(0.2)
+                time.sleep(0.2)
         except KeyboardInterrupt:
             pass
         finally:
@@ -153,8 +139,6 @@ class DictationApp:
                 return
         self._recording = True
         self._stop_event.clear()
-        if self._vad is not None:
-            self._vad.reset()
         self._session = NemotronStreamingSession(
             self.model,
             language=self.language,
@@ -180,11 +164,6 @@ class DictationApp:
                 block = self._recorder.poll(timeout=0.02)
                 if block is None:
                     continue
-                if self._vad is not None:
-                    self._vad.feed(block)
-                    if self._vad.wants_stop():
-                        self._stop_event.set()
-                        self._ui.status("(auto-stop: silence detected)")
                 self._feed_and_step(block)
 
             # Stop capturing, then process every block already received.
@@ -245,24 +224,6 @@ def main() -> None:
         action="store_true",
         help="do not paste the transcript; only print it",
     )
-    parser.add_argument(
-        "--no-auto-stop",
-        action="store_true",
-        help="disable auto-stop: only the hotkey ends a recording",
-    )
-    parser.add_argument(
-        "--stop-silence",
-        type=float,
-        default=1.5,
-        help="seconds of silence after speech that auto-stops the recording "
-        "(default 1.5; requires auto-stop)",
-    )
-    parser.add_argument(
-        "--overlay",
-        action="store_true",
-        help="show the live transcript in a floating always-on-top overlay "
-        "instead of the console",
-    )
     args = parser.parse_args()
 
     from mlx_audio.stt import load
@@ -271,20 +232,11 @@ def main() -> None:
     model = load(args.model)
     model.eval()
 
-    ui = None
-    if args.overlay:
-        from .overlay import OverlayUI
-
-        ui = OverlayUI()
-    vad = None if args.no_auto_stop else EnergyVAD(stop_silence_s=args.stop_silence)
-
     app = DictationApp(
         model,
         language=args.language,
         att_context_size=[56, args.lookahead],
         insert=not args.no_insert,
-        ui=ui,
-        vad=vad,
     )
     app.run()
 

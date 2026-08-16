@@ -27,7 +27,7 @@ Real-time offline streaming ASR for NVIDIA Nemotron 3.5 (RNNT) on Apple Silicon,
 - `pipeline/decoder.py` — `StreamingDecoder`: stateful greedy RNN-T.
 - `pipeline/session.py` — `NemotronStreamingSession`: orchestrator; `feed(pcm)` → `step()` per chunk (cumulative `AlignedResult`), `finish()` flushes the trailing partial, `reset()` starts a new utterance. Latency = `att_context_size=[56, lookahead]`, lookahead ∈ {0,1,3,6,13} (80 ms frames). `language="auto"` enables live language detection: the decoder latches the first emitted `<xx-XX>` tag (`decoder.detected_language` / `session.detected_language`) and the session switches the encoder prompt for later chunks.
 - `benchmark/` — `PerformanceStats` (optional, zero-impact), `StreamingBenchmark` runner, system/memory metrics.
-- `apps/dictation/` — layered: `hotkey.py` (pynput, right-Option tap-to-toggle) → `app.py` (fresh session per recording) → `microphone.py` (20 ms blocks) → `vad.py` (`EnergyVAD`, auto-stop after `stop_silence_s` of silence) → `transcript.py` (cumulative) → `text_insertion.py` (clipboard-safe ⌘V via `CGEventPost`); `overlay.py` (`OverlayUI`, floating NSPanel via AppKit, `--overlay`; text is queued from any thread and rendered by `tick()` on the main thread).
+- `apps/dictation/` — layered: `hotkey.py` (pynput, right-Option tap-to-toggle) → `app.py` (fresh session per recording) → `microphone.py` (20 ms blocks) → `transcript.py` (cumulative) → `text_insertion.py` (clipboard-safe ⌘V via `CGEventPost`). The recording only stops on a hotkey tap — pauses for thinking are fine, there is no auto-stop and no UI overlay.
 
 ## Conventions
 
@@ -46,6 +46,7 @@ Real-time offline streaming ASR for NVIDIA Nemotron 3.5 (RNNT) on Apple Silicon,
 <!-- mic demo: session.finish() flush on exit so Ctrl+C keeps the trailing partial chunk. -->
 <!-- gap-closing round: real-model integration + 6-min benchmark validated (RTF ~0.05-0.15, memory bounded; data/ WAV restored locally, gitignored); auto language detection (language="auto" -> decoder latches <xx-XX> tag, session re-prompts); EnergyVAD auto-stop (--no-auto-stop, --stop-silence); floating OverlayUI (--overlay); removed dead duplicate utils/tokenizer.py (upstream tok has the same helpers). -->
 <!-- benchmark note: 'GROWTH DETECTED: python_heap_bytes' is the stats collector's own token_latency bucket (1 sample/token, capped by max_samples), not a pipeline leak; all pipeline signals flat. -->
+<!-- scope round: removed overlay UI and VAD auto-stop at user request -- dictation is tap-to-toggle only, recording never stops on silence, final text is pasted at the cursor; pipeline auto-language detection (language="auto") kept but dictation default stays en-US. -->
 
 ## Agent skills
 
