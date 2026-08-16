@@ -55,7 +55,9 @@ class LatencyProbe:
     def feed_pcm(self, pcm):
         """Feed one PCM block; latch the first speech-like block."""
         if self.speech_start_ns is None:
-            rms = float(np.sqrt(np.mean(pcm.astype(np.float64) ** 2)))
+            # float32 in-place math: no float64 copy per block, plenty of
+            # precision for an energy threshold probe.
+            rms = float(np.sqrt(np.mean(np.square(pcm))))
             if rms >= self.vad_threshold:
                 self.speech_start_ns = time.perf_counter_ns()
                 self.print(

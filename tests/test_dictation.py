@@ -171,6 +171,84 @@ def test_hotkey_toggle_requires_trigger_key():
         PynputGlobalHotkey(modifiers=("option",), toggle=True)
 
 
+def test_hotkey_toggle_requires_modifiers():
+    """A bare trigger press must not toggle a modifier combo (cmd+f10)."""
+    from pynput import keyboard
+
+    from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
+
+    events = []
+    hk = PynputGlobalHotkey(modifiers=("cmd",), key="f10", toggle=True)
+    hk.on_press = lambda: events.append("press")
+    hk.on_release = lambda: events.append("release")
+
+    hk._on_press(keyboard.Key.f10)  # bare trigger -> ignored
+    assert events == []
+    hk._on_release(keyboard.Key.f10)
+
+    hk._on_press(keyboard.Key.cmd)  # modifier held...
+    hk._on_press(keyboard.Key.f10)  # ...then trigger -> start
+    assert events == ["press"]
+    hk._on_release(keyboard.Key.f10)
+    hk._on_release(keyboard.Key.cmd)
+
+    hk._on_press(keyboard.Key.f10)  # bare again -> still ignored
+    assert events == ["press"]
+    hk._on_release(keyboard.Key.f10)
+
+    hk._on_press(keyboard.Key.cmd)
+    hk._on_press(keyboard.Key.f10)  # combo again -> stop
+    assert events == ["press", "release"]
+
+
+def test_rapid_stop_then_start_is_not_swallowed(tiny_model):
+    """A start tap landing while the previous recording is still finalizing
+    must wait for it and start a fresh recording (not be dropped)."""
+    from nemotron_streaming_asr.apps.dictation.app import DictationApp
+
+    class SlowRecorder(_FakeRecorder):
+        def drain(self):
+            time.sleep(0.1)  # keep the worker alive past the next start tap
+            return []
+
+    recorder = SlowRecorder()
+    ui_lines = []
+    quiet_ui = type("UI", (), {"status": ui_lines.append,
+                               "on_partial": lambda self, t: None})()
+    app = DictationApp(tiny_model, language="en-US", recorder=recorder,
+                       insert=False, ui=quiet_ui)
+
+    app.start_recording()
+    app.stop_recording()
+    worker1, session1 = app._worker, app._session
+
+    app.start_recording()  # immediately: must not be swallowed
+    assert app._recording is True
+    assert app._worker is not worker1  # a fresh recording actually started
+    assert app._session is not session1
+
+    app.stop_recording()
+    app._worker.join(timeout=10)
+    assert app._recording is False
+
+
+def test_main_rejects_modifier_only_toggle_hotkey(monkeypatch, capsys, tiny_model):
+    """--hotkey cmd+option (modifier-only) with the default toggle mode must
+    fail with a clear argparse error, not a raw ValueError traceback."""
+    import sys
+
+    from nemotron_streaming_asr.apps.dictation import app as app_mod
+
+    monkeypatch.setattr("mlx_audio.stt.load", lambda *a, **k: tiny_model)
+    monkeypatch.setattr(
+        sys, "argv", ["nemotron-dictation", "--hotkey", "cmd+option"]
+    )
+    with pytest.raises(SystemExit) as ei:
+        app_mod.main()
+    assert ei.value.code == 2
+    assert "trigger key" in capsys.readouterr().err
+
+
 # -------------------------------------------------------------- text insertion
 def test_text_insertion_empty_guard():
     """Empty text must not touch the clipboard or post any key event."""

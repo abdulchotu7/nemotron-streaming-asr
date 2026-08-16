@@ -146,7 +146,9 @@ class StreamingAudioBuffer:
                 self._length -= first.shape[0]
                 self._chunks.popleft()
             else:
-                self._chunks[0] = first[drop:]
+                # Copy the retained slice: a numpy view would pin the whole
+                # base buffer (which may be a large fed array) in memory.
+                self._chunks[0] = first[drop:].copy()
                 self.trim_sample += drop
                 self._length -= drop
                 drop = 0
@@ -165,8 +167,6 @@ class StreamingAudioBuffer:
         if self._can_trim:
             self._trim()
 
-        waveform = mx.array(self._contiguous())
-
         # Snapshots keep this generator immune to concurrent feed()/reset().
         total = self.total_samples
         next_mel_frame = self.next_mel_frame
@@ -178,6 +178,14 @@ class StreamingAudioBuffer:
             total,
             next_mel_frame,
         )
+
+        if not self._full_chunk_ready(total, next_mel_frame):
+            return
+
+        # Convert only when a chunk is actually ready: on the (typical) no-op
+        # steps -- ~55 of every 56 at 20 ms feeds -- this avoids a per-step
+        # numpy -> MLX copy of the retained waveform.
+        waveform = mx.array(self._contiguous())
 
         while self._full_chunk_ready(total, next_mel_frame):
             start = next_mel_frame - trim_frames
@@ -218,15 +226,16 @@ class StreamingAudioBuffer:
         if self._can_trim:
             self._trim()
 
-        waveform = mx.array(self._contiguous())
-
         total = self.total_samples
         next_mel_frame = self.next_mel_frame
         trim_frames = self._trim_frames
-        available = total // self.config.hop_length + 1
-        remaining = available - next_mel_frame
+        remaining = self.available_frames - next_mel_frame
         if remaining <= 0:
             return
+
+        # Convert only when there is actually a tail to emit (same lazy
+        # conversion as get_ready_mel_chunks).
+        waveform = mx.array(self._contiguous())
 
         start = next_mel_frame - trim_frames
         end = start + remaining

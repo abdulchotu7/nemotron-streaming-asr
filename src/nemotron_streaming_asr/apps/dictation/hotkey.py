@@ -144,8 +144,10 @@ class PynputGlobalHotkey(GlobalHotkey):
         self._pressed.add(token)
 
         if self.toggle:
-            # Tap-to-toggle: only a fresh press of the trigger key flips state.
-            if not fresh or token != self._trigger_token:
+            # Tap-to-toggle: only a fresh press of the trigger key flips state,
+            # and only while every configured modifier is held (a bare trigger
+            # press must not toggle a modifier combo such as cmd+f10).
+            if not fresh or token != self._trigger_token or not self._ready():
                 return
             if self._active:
                 self._active = False

@@ -40,7 +40,8 @@ Real-time offline streaming ASR for NVIDIA Nemotron 3.5 (RNNT) on Apple Silicon,
 
 ## Notes
 
-<!-- quick-add scratchpad: (empty) -->
+<!-- quick-add scratchpad: -->
+<!-- review/optimisations round: fixed dictation bugs (toggle requires modifiers; modifier-only hotkey CLI error; swallowed rapid stop->start tap), trim view pinning of fed buffers, lazy mel waveform conversion on no-op steps, LatencyProbe float64 copy; 4 regression tests. Pipeline math untouched (reference-identical). -->
 
 ## Agent skills
 

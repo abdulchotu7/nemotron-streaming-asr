@@ -81,6 +81,20 @@ def test_reset(tiny_model, seeded_audio):
         assert float(mx.max(mx.abs(mx.array(x) - mx.array(y)))) == 0.0
 
 
+def test_trim_releases_fed_base_buffer(tiny_model):
+    """A single large feed must not pin its base buffer via trim views."""
+    big = (np.random.default_rng(0).standard_normal(200_000) * 0.05).astype(
+        np.float32
+    )
+    buf = StreamingAudioBuffer(tiny_model)
+    buf.feed(big)
+    list(buf.get_ready_mel_chunks())
+
+    assert buf._chunks
+    for c in buf._chunks:
+        assert not np.shares_memory(big, c), "trim view pins the fed buffer"
+
+
 def test_tail_flush(tiny_model, seeded_audio):
     """get_tail_mel_chunks emits the sub-chunk remainder and matches the
     offline tail chunk exactly."""

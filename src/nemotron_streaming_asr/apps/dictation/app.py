@@ -133,7 +133,14 @@ class DictationApp:
     def start_recording(self) -> None:
         """Hotkey pressed/tapped: create a fresh session and start capturing."""
         if self._recording:
-            return
+            # A stop tap may have just landed and the worker could still be
+            # draining/finalizing. Wait for it so this tap is not swallowed
+            # (otherwise a quick stop->start needs a fourth tap).
+            worker = self._worker
+            if worker is not None and worker.is_alive():
+                worker.join(timeout=5.0)
+            if self._recording:  # still busy -> drop this tap
+                return
         self._recording = True
         self._stop_event.clear()
         self._session = NemotronStreamingSession(
@@ -244,6 +251,12 @@ def main() -> None:
     keys = [p for p in parts if p not in modifier_names]
     if len(keys) > 1:
         parser.error(f"--hotkey: expected at most one trigger key, got {keys}")
+    if args.toggle and not keys:
+        parser.error(
+            "--toggle (default) needs a trigger key in --hotkey; add one "
+            f"(e.g. {args.hotkey}+f10) or pass --no-toggle for hold-to-talk "
+            "with a modifier-only combo"
+        )
     hotkey = PynputGlobalHotkey(
         modifiers=tuple(modifiers),
         key=keys[0] if keys else None,
