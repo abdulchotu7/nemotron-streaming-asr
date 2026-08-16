@@ -27,13 +27,13 @@ Real-time offline streaming ASR for NVIDIA Nemotron 3.5 (RNNT) on Apple Silicon,
 - `pipeline/decoder.py` — `StreamingDecoder`: stateful greedy RNN-T.
 - `pipeline/session.py` — `NemotronStreamingSession`: orchestrator; `feed(pcm)` → `step()` per chunk (cumulative `AlignedResult`), `finish()` flushes the trailing partial, `reset()` starts a new utterance. Latency = `att_context_size=[56, lookahead]`, lookahead ∈ {0,1,3,6,13} (80 ms frames).
 - `benchmark/` — `PerformanceStats` (optional, zero-impact), `StreamingBenchmark` runner, system/memory metrics.
-- `apps/dictation/` — layered: `hotkey.py` (pynput, hold or tap-to-toggle) → `app.py` (fresh session per recording) → `microphone.py` (20 ms blocks) → `transcript.py` (cumulative) → `text_insertion.py` (clipboard-safe ⌘V via `CGEventPost`).
+- `apps/dictation/` — layered: `hotkey.py` (pynput, right-Option tap-to-toggle) → `app.py` (fresh session per recording) → `microphone.py` (20 ms blocks) → `transcript.py` (cumulative) → `text_insertion.py` (clipboard-safe ⌘V via `CGEventPost`).
 
 ## Conventions
 
 - `session.feed(block)` then `session.step()` per chunk; always `session.finish()` before reading final text.
 - Dictation layers are constructor-injected (`hotkey`/`recorder`/`ui`) — swap without touching the app.
-- Hotkey: `PynputGlobalHotkey(modifiers=..., key=..., toggle=...)`. Toggle mode requires a trigger key; right Option = `alt_r` (left Option is `alt`, indistinguishable from the family). Release alone never stops in toggle mode — only a fresh trigger press does.
+- Hotkey: `PynputGlobalHotkey(key="alt_r")` — tap-to-toggle only, right Option = `alt_r` (left Option is `alt` and never triggers). Release alone never stops — only a fresh trigger press does. No modifier combos or hold mode.
 - macOS permissions: **Input Monitoring** for pynput, **Accessibility** for the synthetic ⌘V paste. App warns at startup if paste permission is missing.
 - Tests use `tiny_model` + `seeded_audio` session fixtures from `tests/conftest.py` (deterministic RNG) and prove frame/token equivalence to the reference impl.
 - `data/` and the sample WAV are gitignored — never commit them.
@@ -42,6 +42,7 @@ Real-time offline streaming ASR for NVIDIA Nemotron 3.5 (RNNT) on Apple Silicon,
 
 <!-- quick-add scratchpad: -->
 <!-- review/optimisations round: fixed dictation bugs (toggle requires modifiers; modifier-only hotkey CLI error; swallowed rapid stop->start tap), trim view pinning of fed buffers, lazy mel waveform conversion on no-op steps, LatencyProbe float64 copy; 4 regression tests. Pipeline math untouched (reference-identical). -->
+<!-- simplification round: hotkey is now toggle-only right Option (PynputGlobalHotkey(key="alt_r")); removed --hotkey/--toggle CLI flags, hold mode and modifier machinery; hotkey tests rewritten. -->
 
 ## Agent skills
 

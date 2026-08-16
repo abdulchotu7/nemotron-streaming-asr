@@ -2,10 +2,7 @@
 end-to-end recording lifecycle with a fake recorder (no microphone/hardware).
 """
 
-import threading
 import time
-
-import pytest
 
 
 def _result(text):
@@ -52,67 +49,6 @@ def test_transcript_controller_multiple_listeners():
 
 
 # --------------------------------------------------------------------- hotkey
-def test_hotkey_modifier_combo_hold():
-    from pynput import keyboard
-
-    from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
-
-    events = []
-    hk = PynputGlobalHotkey(modifiers=("cmd", "option"))
-    hk.on_press = lambda: events.append("press")
-    hk.on_release = lambda: events.append("release")
-
-    hk._on_press(keyboard.Key.cmd)  # only one modifier -> not yet
-    assert events == []
-    hk._on_press(keyboard.Key.alt)  # both held -> press
-    assert events == ["press"]
-    hk._on_press(keyboard.Key.cmd)  # key repeat while held -> ignored
-    assert events == ["press"]
-    hk._on_release(keyboard.Key.cmd)  # any modifier released -> release
-    assert events == ["press", "release"]
-
-    # Re-hold starts again.
-    hk._on_press(keyboard.Key.cmd)
-    hk._on_press(keyboard.Key.alt)
-    assert events == ["press", "release", "press"]
-
-
-def test_hotkey_single_key_hold():
-    from pynput import keyboard
-
-    from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
-
-    events = []
-    hk = PynputGlobalHotkey(modifiers=(), key="f10")
-    hk.on_press = lambda: events.append("press")
-    hk.on_release = lambda: events.append("release")
-
-    hk._on_press(keyboard.Key.f10)
-    assert events == ["press"]
-    hk._on_press(keyboard.Key.f10)  # repeat ignored
-    assert events == ["press"]
-    hk._on_release(keyboard.Key.f10)
-    assert events == ["press", "release"]
-
-
-def test_hotkey_requires_trigger_key():
-    from pynput import keyboard
-
-    from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
-
-    events = []
-    hk = PynputGlobalHotkey(modifiers=("cmd",), key="v")
-    hk.on_press = lambda: events.append("press")
-    hk.on_release = lambda: events.append("release")
-
-    hk._on_press(keyboard.Key.cmd)
-    assert events == []  # 'v' not held
-    hk._on_press(keyboard.KeyCode.from_char("v"))
-    assert events == ["press"]
-    hk._on_release(keyboard.Key.cmd)
-    assert events == ["press", "release"]
-
-
 def test_hotkey_toggle_right_option():
     """Right Option tap-to-toggle: tap starts, tap again stops; repeat/release
     alone never fires, and the left Option key does not trigger it."""
@@ -121,7 +57,7 @@ def test_hotkey_toggle_right_option():
     from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
 
     events = []
-    hk = PynputGlobalHotkey(modifiers=(), key="alt_r", toggle=True)
+    hk = PynputGlobalHotkey(key="alt_r")
     hk.on_press = lambda: events.append("press")
     hk.on_release = lambda: events.append("release")
 
@@ -141,63 +77,35 @@ def test_hotkey_toggle_right_option():
     assert events == ["press", "release", "press"]
 
 
-def test_hotkey_toggle_with_modifiers():
-    """Toggle also works with a modifier combo as long as a trigger key is set."""
+def test_hotkey_default_is_right_option_toggle():
+    """The default hotkey is exactly right-Option tap-to-toggle."""
+    from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
+
+    hk = PynputGlobalHotkey()
+    assert hk.key == "alt_r"
+    assert hk._trigger_token == "alt_r"
+
+
+def test_hotkey_other_trigger_key():
+    """A different trigger key (f10) toggles only on fresh f10 presses."""
     from pynput import keyboard
 
     from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
 
     events = []
-    hk = PynputGlobalHotkey(modifiers=("cmd",), key="f10", toggle=True)
+    hk = PynputGlobalHotkey(key="f10")
     hk.on_press = lambda: events.append("press")
     hk.on_release = lambda: events.append("release")
 
-    hk._on_press(keyboard.Key.cmd)  # modifier alone is not the trigger
+    hk._on_press(keyboard.Key.alt_r)  # unrelated key -> ignored
     assert events == []
-    hk._on_press(keyboard.Key.f10)  # combo complete -> start
+    hk._on_press(keyboard.Key.f10)  # fresh f10 -> start
     assert events == ["press"]
-    hk._on_release(keyboard.Key.cmd)  # releasing a modifier does not stop
+    hk._on_press(keyboard.Key.f10)  # repeat while held -> ignored
     assert events == ["press"]
-    hk._on_release(keyboard.Key.f10)  # lift the trigger between taps
-    hk._on_press(keyboard.Key.cmd)  # re-hold combo...
-    hk._on_press(keyboard.Key.f10)  # ...and press trigger again -> stop
-    assert events == ["press", "release"]
-
-
-def test_hotkey_toggle_requires_trigger_key():
-    from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
-
-    with pytest.raises(ValueError):
-        PynputGlobalHotkey(modifiers=("option",), toggle=True)
-
-
-def test_hotkey_toggle_requires_modifiers():
-    """A bare trigger press must not toggle a modifier combo (cmd+f10)."""
-    from pynput import keyboard
-
-    from nemotron_streaming_asr.apps.dictation.hotkey import PynputGlobalHotkey
-
-    events = []
-    hk = PynputGlobalHotkey(modifiers=("cmd",), key="f10", toggle=True)
-    hk.on_press = lambda: events.append("press")
-    hk.on_release = lambda: events.append("release")
-
-    hk._on_press(keyboard.Key.f10)  # bare trigger -> ignored
-    assert events == []
-    hk._on_release(keyboard.Key.f10)
-
-    hk._on_press(keyboard.Key.cmd)  # modifier held...
-    hk._on_press(keyboard.Key.f10)  # ...then trigger -> start
+    hk._on_release(keyboard.Key.f10)  # release alone -> still recording
     assert events == ["press"]
-    hk._on_release(keyboard.Key.f10)
-    hk._on_release(keyboard.Key.cmd)
-
-    hk._on_press(keyboard.Key.f10)  # bare again -> still ignored
-    assert events == ["press"]
-    hk._on_release(keyboard.Key.f10)
-
-    hk._on_press(keyboard.Key.cmd)
-    hk._on_press(keyboard.Key.f10)  # combo again -> stop
+    hk._on_press(keyboard.Key.f10)  # fresh f10 -> stop
     assert events == ["press", "release"]
 
 
@@ -230,23 +138,6 @@ def test_rapid_stop_then_start_is_not_swallowed(tiny_model):
     app.stop_recording()
     app._worker.join(timeout=10)
     assert app._recording is False
-
-
-def test_main_rejects_modifier_only_toggle_hotkey(monkeypatch, capsys, tiny_model):
-    """--hotkey cmd+option (modifier-only) with the default toggle mode must
-    fail with a clear argparse error, not a raw ValueError traceback."""
-    import sys
-
-    from nemotron_streaming_asr.apps.dictation import app as app_mod
-
-    monkeypatch.setattr("mlx_audio.stt.load", lambda *a, **k: tiny_model)
-    monkeypatch.setattr(
-        sys, "argv", ["nemotron-dictation", "--hotkey", "cmd+option"]
-    )
-    with pytest.raises(SystemExit) as ei:
-        app_mod.main()
-    assert ei.value.code == 2
-    assert "trigger key" in capsys.readouterr().err
 
 
 # -------------------------------------------------------------- text insertion

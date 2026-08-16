@@ -13,15 +13,13 @@ Layering::
                                          ▼
                                  TextInsertionService (paste at cursor)
 
-User workflow: tap the hotkey (default: right **Option ⌥**) to start recording,
-speak, then tap it again to stop — the final transcript is pasted at the
-cursor. A fresh session is created per recording, so no state leaks between
-recordings.
+User workflow: tap the hotkey (right **Option ⌥**) to start recording, speak,
+then tap it again to stop — the final transcript is pasted at the cursor. A
+fresh session is created per recording, so no state leaks between recordings.
 
 Usage:
     python -m nemotron_streaming_asr.apps.dictation
     nemotron-dictation --lookahead 3 --no-insert
-    nemotron-dictation --hotkey cmd+option --no-toggle   # classic hold-to-talk
 """
 
 from __future__ import annotations
@@ -96,9 +94,7 @@ class DictationApp:
         self._insertion = TextInsertionService()
 
         self.transcript = LiveTranscriptController(on_update=self._ui.on_partial)
-        self._hotkey = hotkey or PynputGlobalHotkey(
-            modifiers=(), key="alt_r", toggle=True  # right Option, tap-to-toggle
-        )
+        self._hotkey = hotkey or PynputGlobalHotkey(key="alt_r")  # right Option
         self._hotkey.on_press = self.start_recording
         self._hotkey.on_release = self.stop_recording
 
@@ -219,20 +215,6 @@ def main() -> None:
         "(default 13 -> 1.12 s, lowest latency 0 -> 80 ms)",
     )
     parser.add_argument(
-        "--hotkey",
-        default="alt_r",
-        help="hotkey spec: '+' separated; modifier names (cmd/ctrl/option/alt/"
-        "shift) plus one optional trigger key, e.g. alt_r (default, right "
-        "Option), f10, cmd+option, cmd+shift",
-    )
-    parser.add_argument(
-        "--toggle",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="tap the hotkey to start/stop recording (default). Use --no-toggle "
-        "for hold-to-talk: press to start, release to stop.",
-    )
-    parser.add_argument(
         "--no-insert",
         action="store_true",
         help="do not paste the transcript; only print it",
@@ -245,28 +227,10 @@ def main() -> None:
     model = load(args.model)
     model.eval()
 
-    parts = [p.strip().lower() for p in args.hotkey.split("+") if p.strip()]
-    modifier_names = {"cmd", "ctrl", "option", "alt", "shift"}
-    modifiers = [p for p in parts if p in modifier_names]
-    keys = [p for p in parts if p not in modifier_names]
-    if len(keys) > 1:
-        parser.error(f"--hotkey: expected at most one trigger key, got {keys}")
-    if args.toggle and not keys:
-        parser.error(
-            "--toggle (default) needs a trigger key in --hotkey; add one "
-            f"(e.g. {args.hotkey}+f10) or pass --no-toggle for hold-to-talk "
-            "with a modifier-only combo"
-        )
-    hotkey = PynputGlobalHotkey(
-        modifiers=tuple(modifiers),
-        key=keys[0] if keys else None,
-        toggle=args.toggle,
-    )
     app = DictationApp(
         model,
         language=args.language,
         att_context_size=[56, args.lookahead],
-        hotkey=hotkey,
         insert=not args.no_insert,
     )
     app.run()
