@@ -2,8 +2,7 @@
 
 Provides highly visual, modern recording feedback globally on macOS. Automatically detects the
 active text cursor (caret) or focused text box using macOS Accessibility APIs and positions
-itself right under it. If no caret is detected, it falls back to centering at the bottom of the
-screen (above the dock), matching Wispr Flow behavior.
+itself right under it. If no caret is detected, it falls back to the mouse cursor position.
 """
 
 from __future__ import annotations
@@ -15,7 +14,9 @@ from AppKit import (
     NSView, NSColor, NSBezierPath, NSPanel, NSMakeRect, NSEvent, NSScreen,
     NSRunLoop, NSDefaultRunLoopMode, NSDate, NSFloatingWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorFullScreenAuxiliary,
-    NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered
+    NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered,
+    NSVisualEffectView, NSVisualEffectMaterialHUDWindow, NSVisualEffectStateActive,
+    NSVisualEffectBlendingModeBehindWindow
 )
 from ApplicationServices import (
     AXUIElementCreateSystemWide, AXUIElementCopyAttributeValue,
@@ -24,8 +25,6 @@ from ApplicationServices import (
     kAXBoundsForRangeParameterizedAttribute, kAXPositionAttribute, kAXSizeAttribute,
     kAXValueCGPointType, kAXValueCGRectType, kAXValueCGSizeType
 )
-
-# ponytail: simple periodic bezier path redraw, upgrade to CoreAnimation layers if drawing ever exceeds 1% CPU
 
 def get_focused_caret_rect() -> tuple[float, float, float, float] | None:
     """Attempt to get the screen rectangle of the active text caret or focused text box.
@@ -86,35 +85,27 @@ class WaveformView(NSView):
         width = bounds.size.width
         height = bounds.size.height
         
-        # 1. Draw a beautiful translucent pill/capsule background
-        pill_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, height / 2.0, height / 2.0)
-        
-        # Sleek dark translucent body
-        NSColor.colorWithRed_green_blue_alpha_(0.08, 0.08, 0.1, 0.88).set()
-        pill_path.fill()
-        
-        # Subtle white glow border
-        NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.12).set()
-        pill_path.setLineWidth_(1.0)
-        pill_path.stroke()
-        
-        # 2. Draw 5 rounded vertical bouncing audio level bars centered in the capsule
-        bar_width = 3.0
-        gap = 4.0
-        num_bars = 5
+        # Draw 7 premium rounded vertical equalizer bars centered in the capsule
+        bar_width = 2.5
+        gap = 3.5
+        num_bars = 7
         total_bars_width = num_bars * bar_width + (num_bars - 1) * gap
         start_x = (width - total_bars_width) / 2.0
         
         for i in range(num_bars):
-            # Idle breathing phase shift per bar (gently pulses in a wave when silent)
-            idle = math.sin(self._phase * 1.5 + i * 1.0) * 0.4 + 0.6  # value in [0.2, 1.0]
-            idle_height = 4.0 + 3.0 * idle  # 4px to 7px baseline
+            # Bell-curve weighting so center bars are taller (natural frequency spectrum)
+            dist_from_center = abs(i - (num_bars - 1) / 2.0)
+            weight = 1.0 - (dist_from_center / ((num_bars - 1) / 2.0 + 1.0)) * 0.35
             
-            # Voice amplitude boost (varies per bar for a dynamic graphic equalizer effect)
-            voice_factor = (0.5 + 0.5 * math.sin(self._phase * 2.5 + i * 1.5))
-            voice_height = 14.0 * self._volume * voice_factor
+            # Idle breathing phase shift per bar
+            idle = math.sin(self._phase * 1.8 + i * 0.8) * 0.35 + 0.65
+            idle_height = 4.0 + 3.5 * idle * weight
             
-            bar_height = min(height - 8.0, idle_height + voice_height)
+            # Voice amplitude boost with dynamic phase variance per bar
+            voice_factor = (0.4 + 0.6 * math.sin(self._phase * 3.0 + i * 1.2))
+            voice_height = 14.0 * self._volume * voice_factor * weight
+            
+            bar_height = min(height - 6.0, idle_height + voice_height)
             
             # Center the bar vertically
             bx = start_x + i * (bar_width + gap)
@@ -123,12 +114,17 @@ class WaveformView(NSView):
             bar_rect = NSMakeRect(bx, by, bar_width, bar_height)
             bar_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bar_rect, bar_width / 2.0, bar_width / 2.0)
             
-            # Aesthetic gradient color transition across the bars (indigo-cyan to magenta-pink)
-            r = 0.15 + 0.18 * i  # from 0.15 to 0.87
-            g = 0.65 - 0.12 * i  # from 0.65 to 0.17
-            b = 1.0 - 0.08 * i   # from 1.0 to 0.68
+            # Ultra-premium Apple Intelligence style gradient colors (Cyan -> Indigo -> Vibrant Pink/Purple)
+            # t goes from 0.0 to 1.0 across the 7 bars
+            t = i / (num_bars - 1)
+            r = 0.05 + t * 0.85
+            g = 0.85 - t * 0.45
+            b = 1.0
             
-            NSColor.colorWithRed_green_blue_alpha_(r, g, b, 0.9).set()
+            # Subtle glow / opacity boost when speaking loudly
+            alpha = min(1.0, 0.75 + self._volume * 0.25)
+            
+            NSColor.colorWithRed_green_blue_alpha_(r, g, b, alpha).set()
             bar_path.fill()
 
 
@@ -143,9 +139,9 @@ class WaveformOverlayUI:
         self._current_volume = 0.15
         self._lock = threading.Lock()
         
-        # Dimensions for our sleek pill-shaped visualizer
-        self._panel_width = 72.0
-        self._panel_height = 24.0
+        # Sleek compact pill dimensions (Wispr Flow / Dynamic Island proportions: 82x26)
+        self._panel_width = 82.0
+        self._panel_height = 26.0
         
     def status(self, message: str) -> None:
         print(f"\r{message}", end="", flush=True)
@@ -164,13 +160,13 @@ class WaveformOverlayUI:
             self._panel, self._view = self._build_panel()
             
         # Advance animation phase
-        self._phase += 0.15
+        self._phase += 0.18
         if self._phase > 2 * math.pi:
             self._phase -= 2 * math.pi
             
         # Smooth volume transitions via a low-pass filter
         with self._lock:
-            self._current_volume = 0.75 * self._current_volume + 0.25 * self._target_volume
+            self._current_volume = 0.7 * self._current_volume + 0.3 * self._target_volume
             
         self._view.setPhase_(self._phase)
         self._view.setVolume_(self._current_volume)
@@ -192,12 +188,16 @@ class WaveformOverlayUI:
                 x = cx - (self._panel_width / 2.0)
             else:  # text selection or box
                 x = cx + (cw - self._panel_width) / 2.0
-            y = cy - ch - self._panel_height - 6.0
+            y = cy - ch - self._panel_height - 8.0
         else:
             # Fallback: anchor right next to the mouse cursor pointer
-            mouse_pos = NSEvent.mouseLocation()
-            x = mouse_pos.x + 12.0
-            y = mouse_pos.y - self._panel_height - 12.0
+            try:
+                mouse_pos = NSEvent.mouseLocation()
+                x = mouse_pos.x + 12.0
+                y = mouse_pos.y - self._panel_height - 12.0
+            except Exception:
+                x = (screen_width - self._panel_width) / 2.0
+                y = 55.0
             
         # Bound coordinates to screen boundaries
         x = max(10.0, min(screen_width - self._panel_width - 10.0, x))
@@ -215,7 +215,6 @@ class WaveformOverlayUI:
         """Hide and release the floating panel when done."""
         if self._panel is not None:
             self._panel.orderOut_(None)
-            # Pump the run loop so the window server immediately processes the window hide
             NSRunLoop.currentRunLoop().runMode_beforeDate_(
                 NSDefaultRunLoopMode, NSDate.dateWithTimeIntervalSinceNow_(0.01)
             )
@@ -227,7 +226,6 @@ class WaveformOverlayUI:
             
     def _build_panel(self):
         screen_frame = NSScreen.screens()[0].frame()
-        # Initial placement near mouse cursor or fallback to bottom center
         try:
             mouse_pos = NSEvent.mouseLocation()
             x = mouse_pos.x + 12.0
@@ -251,13 +249,28 @@ class WaveformOverlayUI:
         )
         panel.setOpaque_(False)
         panel.setBackgroundColor_(NSColor.clearColor())
-        panel.setHasShadow_(True)  # Beautiful soft shadow for depth
+        panel.setHasShadow_(True)  # Deep soft drop shadow for floating elevation
         panel.setIgnoresMouseEvents_(True)
         panel.setHidesOnDeactivate_(False)
         panel.setFloatingPanel_(True)
         
+        # 1. Native frosted glass vibrancy background (macOS NSVisualEffectView)
+        effect_view = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, self._panel_width, self._panel_height))
+        effect_view.setMaterial_(NSVisualEffectMaterialHUDWindow)
+        effect_view.setState_(NSVisualEffectStateActive)
+        effect_view.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+        effect_view.setWantsLayer_(True)
+        effect_view.layer().setCornerRadius_(self._panel_height / 2.0)
+        effect_view.layer().setMasksToBounds_(True)
+        effect_view.layer().setBorderWidth_(1.0)
+        effect_view.layer().setBorderColor_(NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.18).CGColor())
+        
+        # 2. Equalizer waveform view on top
         view = WaveformView.alloc().initWithFrame_(NSMakeRect(0, 0, self._panel_width, self._panel_height))
-        panel.contentView().addSubview_(view)
+        view.setWantsLayer_(True)
+        
+        effect_view.addSubview_(view)
+        panel.contentView().addSubview_(effect_view)
         panel.orderFrontRegardless()
         
         return panel, view
