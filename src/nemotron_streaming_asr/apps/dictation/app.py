@@ -107,6 +107,7 @@ class DictationApp:
         self._hotkey.on_release = self.stop_recording
 
         self._recording = False
+        self._ui_visible = False
         self._stop_event = threading.Event()
         self._session: Optional[NemotronStreamingSession] = None
         self._worker: Optional[threading.Thread] = None
@@ -125,7 +126,7 @@ class DictationApp:
         self._hotkey.start()
         try:
             while True:
-                if self._recording and hasattr(self._ui, "tick"):
+                if self._ui_visible and hasattr(self._ui, "tick"):
                     self._ui.tick()
                     time.sleep(0.01)
                 else:
@@ -152,6 +153,7 @@ class DictationApp:
             if self._recording:  # still busy -> drop this tap
                 return
         self._recording = True
+        self._ui_visible = True
         self._stop_event.clear()
         self._session = NemotronStreamingSession(
             self.model,
@@ -168,8 +170,7 @@ class DictationApp:
     def stop_recording(self) -> None:
         """Hotkey released/tapped again: signal the worker to drain and finalize."""
         if self._recording:
-            if hasattr(self._ui, "close"):
-                self._ui.close()
+            self._ui_visible = False
             self._stop_event.set()
     # -------------------------------------------------------- recording loop
     def _recording_loop(self) -> None:
