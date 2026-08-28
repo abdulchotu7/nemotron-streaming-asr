@@ -194,9 +194,10 @@ class WaveformOverlayUI:
                 x = cx + (cw - self._panel_width) / 2.0
             y = cy - ch - self._panel_height - 6.0
         else:
-            # Fallback: center horizontally near the bottom of the screen (above the dock)
-            x = (screen_width - self._panel_width) / 2.0
-            y = 55.0
+            # Fallback: anchor right next to the mouse cursor pointer
+            mouse_pos = NSEvent.mouseLocation()
+            x = mouse_pos.x + 12.0
+            y = mouse_pos.y - self._panel_height - 12.0
             
         # Bound coordinates to screen boundaries
         x = max(10.0, min(screen_width - self._panel_width - 10.0, x))
@@ -226,9 +227,15 @@ class WaveformOverlayUI:
             
     def _build_panel(self):
         screen_frame = NSScreen.screens()[0].frame()
-        # Default starting position centered near the bottom of the screen
-        x = (screen_frame.size.width - self._panel_width) / 2.0
-        y = 55.0
+        # Initial placement near mouse cursor or fallback to bottom center
+        try:
+            mouse_pos = NSEvent.mouseLocation()
+            x = mouse_pos.x + 12.0
+            y = mouse_pos.y - self._panel_height - 12.0
+        except Exception:
+            x = (screen_frame.size.width - self._panel_width) / 2.0
+            y = 55.0
+            
         rect = NSMakeRect(x, y, self._panel_width, self._panel_height)
         
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
