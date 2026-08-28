@@ -214,6 +214,10 @@ class WaveformOverlayUI:
         """Hide and release the floating panel when done."""
         if self._panel is not None:
             self._panel.orderOut_(None)
+            # Pump the run loop so the window server immediately processes the window hide
+            NSRunLoop.currentRunLoop().runMode_beforeDate_(
+                NSDefaultRunLoopMode, NSDate.dateWithTimeIntervalSinceNow_(0.01)
+            )
             self._panel = None
             self._view = None
             self._target_volume = 0.15
