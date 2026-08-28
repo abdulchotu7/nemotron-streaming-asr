@@ -82,50 +82,48 @@ class WaveformView(NSView):
         bounds = self.bounds()
         width = bounds.size.width
         height = bounds.size.height
-        
-        # 1. Draw the beautiful translucent dark pill/capsule background
-        pill_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, height / 2.0, height / 2.0)
-        
-        # Sleek dark translucent body
-        NSColor.colorWithRed_green_blue_alpha_(0.08, 0.08, 0.1, 0.90).set()
+
+        # 1. Pill — ink surface, hairline border (conservative: reads as system UI)
+        pill_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            bounds, height / 2.0, height / 2.0
+        )
+        NSColor.colorWithRed_green_blue_alpha_(0.063, 0.063, 0.075, 0.92).set()
         pill_path.fill()
-        
-        # Subtle white glow border for clean definition
-        NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.15).set()
+        NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.10).set()
         pill_path.setLineWidth_(1.0)
         pill_path.stroke()
-        
-        # 2. Draw 5 clean rounded vertical bouncing audio level bars centered in the capsule
-        bar_width = 3.0
+
+        # 2. Five monochrome equalizer bars, bell-curve weighted
+        bar_width = 2.5
         gap = 4.0
         num_bars = 5
         total_bars_width = num_bars * bar_width + (num_bars - 1) * gap
         start_x = (width - total_bars_width) / 2.0
-        
+
         for i in range(num_bars):
-            # Idle breathing phase shift per bar (gently pulses in a wave when silent)
-            idle = math.sin(self._phase * 1.5 + i * 1.0) * 0.4 + 0.6  # value in [0.2, 1.0]
-            idle_height = 4.0 + 3.0 * idle  # 4px to 7px baseline
-            
-            # Voice amplitude boost (varies per bar for a dynamic graphic equalizer effect)
+            # Bell-curve: center bar (i=2) is the tallest, outer bars taper
+            dist_from_center = abs(i - (num_bars - 1) / 2.0)
+            weight = 1.0 - (dist_from_center / ((num_bars - 1) / 2.0 + 1.0)) * 0.35
+
+            # Idle breathing (gentle sine wave when silent)
+            idle = math.sin(self._phase * 1.5 + i * 1.0) * 0.4 + 0.6
+            idle_height = 4.0 + 3.0 * idle
+
+            # Voice amplitude boost — center bar is more responsive too
             voice_factor = (0.5 + 0.5 * math.sin(self._phase * 2.5 + i * 1.5))
-            voice_height = 14.0 * self._volume * voice_factor
-            
+            voice_height = 14.0 * self._volume * voice_factor * weight
+
             bar_height = min(height - 8.0, idle_height + voice_height)
-            
-            # Center the bar vertically
             bx = start_x + i * (bar_width + gap)
             by = (height - bar_height) / 2.0
-            
             bar_rect = NSMakeRect(bx, by, bar_width, bar_height)
-            bar_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bar_rect, bar_width / 2.0, bar_width / 2.0)
-            
-            # Aesthetic gradient color transition across the bars (indigo-cyan to magenta-pink)
-            r = 0.15 + 0.18 * i  # from 0.15 to 0.87
-            g = 0.65 - 0.12 * i  # from 0.65 to 0.17
-            b = 1.0 - 0.08 * i   # from 1.0 to 0.68
-            
-            NSColor.colorWithRed_green_blue_alpha_(r, g, b, 0.95).set()
+            bar_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                bar_rect, bar_width / 2.0, bar_width / 2.0
+            )
+
+            # Monochrome white — center bar slightly brighter, outer bars softer
+            base_alpha = 0.6 + 0.4 * weight  # 0.6..1.0 across the row
+            NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, base_alpha).set()
             bar_path.fill()
 
 
