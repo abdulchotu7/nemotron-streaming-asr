@@ -1,6 +1,6 @@
 """Floating click-through modern equalizer animation that follows the active text cursor (caret).
 
-Provides highly visual, modern recording feedback globally on macOS. Automatically detects the
+Provides highly visual, professional recording feedback globally on macOS. Automatically detects the
 active text cursor (caret) or focused text box using macOS Accessibility APIs and positions
 itself right under it. If no caret is detected, it falls back to the mouse cursor position.
 """
@@ -84,48 +84,67 @@ class WaveformView(NSView):
         bounds = self.bounds()
         width = bounds.size.width
         height = bounds.size.height
+        mid_y = height / 2.0
         
-        # Draw 7 premium rounded vertical equalizer bars centered in the capsule
-        bar_width = 2.5
-        gap = 3.5
-        num_bars = 7
-        total_bars_width = num_bars * bar_width + (num_bars - 1) * gap
-        start_x = (width - total_bars_width) / 2.0
+        # Professional Apple Intelligence / Siri style glowing organic wave ribbons
+        # 3 smooth overlapping sine waves with tapered envelopes
+        waves = [
+            {
+                "color": NSColor.colorWithRed_green_blue_alpha_(0.15, 0.75, 1.0, 0.95),  # Electric Cyan
+                "line_width": 2.0,
+                "freq": 2.2,
+                "phase_speed": 1.0,
+                "amp_factor": 0.9,
+            },
+            {
+                "color": NSColor.colorWithRed_green_blue_alpha_(0.55, 0.25, 1.0, 0.85),  # Vibrant Indigo/Purple
+                "line_width": 1.5,
+                "freq": 3.1,
+                "phase_speed": -1.3,
+                "amp_factor": 0.7,
+            },
+            {
+                "color": NSColor.colorWithRed_green_blue_alpha_(1.0, 0.35, 0.75, 0.7),  # Neon Pink (accent)
+                "line_width": 1.2,
+                "freq": 1.5,
+                "phase_speed": 0.8,
+                "amp_factor": 0.5,
+            },
+        ]
         
-        for i in range(num_bars):
-            # Bell-curve weighting so center bars are taller (natural frequency spectrum)
-            dist_from_center = abs(i - (num_bars - 1) / 2.0)
-            weight = 1.0 - (dist_from_center / ((num_bars - 1) / 2.0 + 1.0)) * 0.35
+        for wave in waves:
+            path = NSBezierPath.bezierPath()
+            path.setLineWidth_(wave["line_width"])
             
-            # Idle breathing phase shift per bar
-            idle = math.sin(self._phase * 1.8 + i * 0.8) * 0.35 + 0.65
-            idle_height = 4.0 + 3.5 * idle * weight
+            # Smooth curve sampling across width
+            step = 2.0
+            x_pts = []
+            y_pts = []
             
-            # Voice amplitude boost with dynamic phase variance per bar
-            voice_factor = (0.4 + 0.6 * math.sin(self._phase * 3.0 + i * 1.2))
-            voice_height = 14.0 * self._volume * voice_factor * weight
-            
-            bar_height = min(height - 6.0, idle_height + voice_height)
-            
-            # Center the bar vertically
-            bx = start_x + i * (bar_width + gap)
-            by = (height - bar_height) / 2.0
-            
-            bar_rect = NSMakeRect(bx, by, bar_width, bar_height)
-            bar_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bar_rect, bar_width / 2.0, bar_width / 2.0)
-            
-            # Ultra-premium Apple Intelligence style gradient colors (Cyan -> Indigo -> Vibrant Pink/Purple)
-            # t goes from 0.0 to 1.0 across the 7 bars
-            t = i / (num_bars - 1)
-            r = 0.05 + t * 0.85
-            g = 0.85 - t * 0.45
-            b = 1.0
-            
-            # Subtle glow / opacity boost when speaking loudly
-            alpha = min(1.0, 0.75 + self._volume * 0.25)
-            
-            NSColor.colorWithRed_green_blue_alpha_(r, g, b, alpha).set()
-            bar_path.fill()
+            for x in range(0, int(width) + 1, int(step)):
+                # Sine envelope tapering to zero at both capsule edges
+                t = (x / width) * math.pi
+                envelope = math.sin(t) ** 1.5
+                
+                # Dynamic amplitude driven by microphone RMS volume + idle breathing
+                idle_breath = math.sin(self._phase * 0.8 + wave["phase_speed"]) * 0.2 + 0.8
+                amplitude = (height * 0.32) * (self._volume * 4.0 + 0.2) * wave["amp_factor"] * idle_breath
+                
+                # Wave oscillation
+                angle = (x / width) * (math.pi * wave["freq"]) + (self._phase * wave["phase_speed"])
+                y = mid_y + amplitude * envelope * math.sin(angle)
+                
+                x_pts.append(float(x))
+                y_pts.append(float(y))
+                
+            if x_pts:
+                path.moveToPoint_((x_pts[0], y_pts[0]))
+                # Use smooth curve interpolation for a luxurious fluid ribbon look
+                for i in range(1, len(x_pts)):
+                    path.lineToPoint_((x_pts[i], y_pts[i]))
+                    
+            wave["color"].setStroke()
+            path.stroke()
 
 
 class WaveformOverlayUI:
@@ -139,9 +158,9 @@ class WaveformOverlayUI:
         self._current_volume = 0.15
         self._lock = threading.Lock()
         
-        # Sleek compact pill dimensions (Wispr Flow / Dynamic Island proportions: 82x26)
-        self._panel_width = 82.0
-        self._panel_height = 26.0
+        # Sleek Apple Intelligence pill dimensions (96x28)
+        self._panel_width = 96.0
+        self._panel_height = 28.0
         
     def status(self, message: str) -> None:
         print(f"\r{message}", end="", flush=True)
@@ -159,8 +178,8 @@ class WaveformOverlayUI:
         if self._panel is None:
             self._panel, self._view = self._build_panel()
             
-        # Advance animation phase
-        self._phase += 0.18
+        # Advance animation phase smoothly
+        self._phase += 0.12
         if self._phase > 2 * math.pi:
             self._phase -= 2 * math.pi
             
@@ -254,7 +273,7 @@ class WaveformOverlayUI:
         panel.setHidesOnDeactivate_(False)
         panel.setFloatingPanel_(True)
         
-        # 1. Native frosted glass vibrancy background (macOS NSVisualEffectView)
+        # 1. Native frosted glass vibrancy background (macOS NSVisualEffectView - HUD style)
         effect_view = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, self._panel_width, self._panel_height))
         effect_view.setMaterial_(NSVisualEffectMaterialHUDWindow)
         effect_view.setState_(NSVisualEffectStateActive)
@@ -263,9 +282,9 @@ class WaveformOverlayUI:
         effect_view.layer().setCornerRadius_(self._panel_height / 2.0)
         effect_view.layer().setMasksToBounds_(True)
         effect_view.layer().setBorderWidth_(1.0)
-        effect_view.layer().setBorderColor_(NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.18).CGColor())
+        effect_view.layer().setBorderColor_(NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.22).CGColor())
         
-        # 2. Equalizer waveform view on top
+        # 2. Smooth organic wave ribbon view on top
         view = WaveformView.alloc().initWithFrame_(NSMakeRect(0, 0, self._panel_width, self._panel_height))
         view.setWantsLayer_(True)
         
