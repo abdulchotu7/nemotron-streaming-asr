@@ -14,9 +14,7 @@ from AppKit import (
     NSView, NSColor, NSBezierPath, NSPanel, NSMakeRect, NSEvent, NSScreen,
     NSRunLoop, NSDefaultRunLoopMode, NSDate, NSFloatingWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorFullScreenAuxiliary,
-    NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered,
-    NSVisualEffectView, NSVisualEffectMaterialHUDWindow, NSVisualEffectStateActive,
-    NSVisualEffectBlendingModeBehindWindow
+    NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered
 )
 from ApplicationServices import (
     AXUIElementCreateSystemWide, AXUIElementCopyAttributeValue,
@@ -84,67 +82,51 @@ class WaveformView(NSView):
         bounds = self.bounds()
         width = bounds.size.width
         height = bounds.size.height
-        mid_y = height / 2.0
         
-        # Professional Apple Intelligence / Siri style glowing organic wave ribbons
-        # 3 smooth overlapping sine waves with tapered envelopes
-        waves = [
-            {
-                "color": NSColor.colorWithRed_green_blue_alpha_(0.15, 0.75, 1.0, 0.95),  # Electric Cyan
-                "line_width": 2.0,
-                "freq": 2.2,
-                "phase_speed": 1.0,
-                "amp_factor": 0.9,
-            },
-            {
-                "color": NSColor.colorWithRed_green_blue_alpha_(0.55, 0.25, 1.0, 0.85),  # Vibrant Indigo/Purple
-                "line_width": 1.5,
-                "freq": 3.1,
-                "phase_speed": -1.3,
-                "amp_factor": 0.7,
-            },
-            {
-                "color": NSColor.colorWithRed_green_blue_alpha_(1.0, 0.35, 0.75, 0.7),  # Neon Pink (accent)
-                "line_width": 1.2,
-                "freq": 1.5,
-                "phase_speed": 0.8,
-                "amp_factor": 0.5,
-            },
-        ]
+        # 1. Draw the beautiful translucent dark pill/capsule background
+        pill_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, height / 2.0, height / 2.0)
         
-        for wave in waves:
-            path = NSBezierPath.bezierPath()
-            path.setLineWidth_(wave["line_width"])
+        # Sleek dark translucent body
+        NSColor.colorWithRed_green_blue_alpha_(0.08, 0.08, 0.1, 0.90).set()
+        pill_path.fill()
+        
+        # Subtle white glow border for clean definition
+        NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.15).set()
+        pill_path.setLineWidth_(1.0)
+        pill_path.stroke()
+        
+        # 2. Draw 5 clean rounded vertical bouncing audio level bars centered in the capsule
+        bar_width = 3.0
+        gap = 4.0
+        num_bars = 5
+        total_bars_width = num_bars * bar_width + (num_bars - 1) * gap
+        start_x = (width - total_bars_width) / 2.0
+        
+        for i in range(num_bars):
+            # Idle breathing phase shift per bar (gently pulses in a wave when silent)
+            idle = math.sin(self._phase * 1.5 + i * 1.0) * 0.4 + 0.6  # value in [0.2, 1.0]
+            idle_height = 4.0 + 3.0 * idle  # 4px to 7px baseline
             
-            # Smooth curve sampling across width
-            step = 2.0
-            x_pts = []
-            y_pts = []
+            # Voice amplitude boost (varies per bar for a dynamic graphic equalizer effect)
+            voice_factor = (0.5 + 0.5 * math.sin(self._phase * 2.5 + i * 1.5))
+            voice_height = 14.0 * self._volume * voice_factor
             
-            for x in range(0, int(width) + 1, int(step)):
-                # Sine envelope tapering to zero at both capsule edges
-                t = (x / width) * math.pi
-                envelope = math.sin(t) ** 1.5
-                
-                # Dynamic amplitude driven by microphone RMS volume + idle breathing
-                idle_breath = math.sin(self._phase * 0.8 + wave["phase_speed"]) * 0.2 + 0.8
-                amplitude = (height * 0.32) * (self._volume * 4.0 + 0.2) * wave["amp_factor"] * idle_breath
-                
-                # Wave oscillation
-                angle = (x / width) * (math.pi * wave["freq"]) + (self._phase * wave["phase_speed"])
-                y = mid_y + amplitude * envelope * math.sin(angle)
-                
-                x_pts.append(float(x))
-                y_pts.append(float(y))
-                
-            if x_pts:
-                path.moveToPoint_((x_pts[0], y_pts[0]))
-                # Use smooth curve interpolation for a luxurious fluid ribbon look
-                for i in range(1, len(x_pts)):
-                    path.lineToPoint_((x_pts[i], y_pts[i]))
-                    
-            wave["color"].setStroke()
-            path.stroke()
+            bar_height = min(height - 8.0, idle_height + voice_height)
+            
+            # Center the bar vertically
+            bx = start_x + i * (bar_width + gap)
+            by = (height - bar_height) / 2.0
+            
+            bar_rect = NSMakeRect(bx, by, bar_width, bar_height)
+            bar_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bar_rect, bar_width / 2.0, bar_width / 2.0)
+            
+            # Aesthetic gradient color transition across the bars (indigo-cyan to magenta-pink)
+            r = 0.15 + 0.18 * i  # from 0.15 to 0.87
+            g = 0.65 - 0.12 * i  # from 0.65 to 0.17
+            b = 1.0 - 0.08 * i   # from 1.0 to 0.68
+            
+            NSColor.colorWithRed_green_blue_alpha_(r, g, b, 0.95).set()
+            bar_path.fill()
 
 
 class WaveformOverlayUI:
@@ -158,9 +140,9 @@ class WaveformOverlayUI:
         self._current_volume = 0.15
         self._lock = threading.Lock()
         
-        # Sleek Apple Intelligence pill dimensions (96x28)
-        self._panel_width = 96.0
-        self._panel_height = 28.0
+        # Dimensions for our sleek pill-shaped visualizer
+        self._panel_width = 72.0
+        self._panel_height = 24.0
         
     def status(self, message: str) -> None:
         print(f"\r{message}", end="", flush=True)
@@ -178,14 +160,14 @@ class WaveformOverlayUI:
         if self._panel is None:
             self._panel, self._view = self._build_panel()
             
-        # Advance animation phase smoothly
-        self._phase += 0.12
+        # Advance animation phase
+        self._phase += 0.15
         if self._phase > 2 * math.pi:
             self._phase -= 2 * math.pi
             
         # Smooth volume transitions via a low-pass filter
         with self._lock:
-            self._current_volume = 0.7 * self._current_volume + 0.3 * self._target_volume
+            self._current_volume = 0.75 * self._current_volume + 0.25 * self._target_volume
             
         self._view.setPhase_(self._phase)
         self._view.setVolume_(self._current_volume)
@@ -207,7 +189,7 @@ class WaveformOverlayUI:
                 x = cx - (self._panel_width / 2.0)
             else:  # text selection or box
                 x = cx + (cw - self._panel_width) / 2.0
-            y = cy - ch - self._panel_height - 8.0
+            y = cy - ch - self._panel_height - 6.0
         else:
             # Fallback: anchor right next to the mouse cursor pointer
             try:
@@ -234,6 +216,7 @@ class WaveformOverlayUI:
         """Hide and release the floating panel when done."""
         if self._panel is not None:
             self._panel.orderOut_(None)
+            # Pump the run loop so the window server immediately processes the window hide
             NSRunLoop.currentRunLoop().runMode_beforeDate_(
                 NSDefaultRunLoopMode, NSDate.dateWithTimeIntervalSinceNow_(0.01)
             )
@@ -268,28 +251,13 @@ class WaveformOverlayUI:
         )
         panel.setOpaque_(False)
         panel.setBackgroundColor_(NSColor.clearColor())
-        panel.setHasShadow_(True)  # Deep soft drop shadow for floating elevation
+        panel.setHasShadow_(True)  # Beautiful soft shadow for depth
         panel.setIgnoresMouseEvents_(True)
         panel.setHidesOnDeactivate_(False)
         panel.setFloatingPanel_(True)
         
-        # 1. Native frosted glass vibrancy background (macOS NSVisualEffectView - HUD style)
-        effect_view = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, self._panel_width, self._panel_height))
-        effect_view.setMaterial_(NSVisualEffectMaterialHUDWindow)
-        effect_view.setState_(NSVisualEffectStateActive)
-        effect_view.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
-        effect_view.setWantsLayer_(True)
-        effect_view.layer().setCornerRadius_(self._panel_height / 2.0)
-        effect_view.layer().setMasksToBounds_(True)
-        effect_view.layer().setBorderWidth_(1.0)
-        effect_view.layer().setBorderColor_(NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.22).CGColor())
-        
-        # 2. Smooth organic wave ribbon view on top
         view = WaveformView.alloc().initWithFrame_(NSMakeRect(0, 0, self._panel_width, self._panel_height))
-        view.setWantsLayer_(True)
-        
-        effect_view.addSubview_(view)
-        panel.contentView().addSubview_(effect_view)
+        panel.contentView().addSubview_(view)
         panel.orderFrontRegardless()
         
         return panel, view
