@@ -15,7 +15,7 @@ from AppKit import (
     NSRunLoop, NSDefaultRunLoopMode, NSDate, NSFloatingWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered,
-    NSShadow, NSGradient
+    NSShadow
 )
 from ApplicationServices import (
     AXUIElementCreateSystemWide, AXUIElementCopyAttributeValue,
@@ -83,83 +83,59 @@ class WaveformView(NSView):
         bounds = self.bounds()
         width = bounds.size.width
         height = bounds.size.height
-
-        # 1. Pill background — obsidian velvet with a top→bottom subtle gradient
-        pill_radius = height / 2.0
-        pill_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            bounds, pill_radius, pill_radius
-        )
-        bg_gradient = NSGradient.alloc().initWithColors_([
-            NSColor.colorWithRed_green_blue_alpha_(0.13, 0.13, 0.15, 0.95),
-            NSColor.colorWithRed_green_blue_alpha_(0.05, 0.05, 0.07, 0.92),
-        ])
-        bg_gradient.drawInBezierPath_angle_(pill_path, 270.0)
-
-        # 2. Inner highlight along the top edge (Apple-style beveled glass lip)
-        highlight = NSBezierPath.bezierPath()
-        highlight.appendBezierPathWithRoundedRect_xRadius_yRadius_(
-            bounds, pill_radius, pill_radius
-        )
-        highlight.setLineWidth_(1.0)
-        NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.28).set()
-        highlight.stroke()
-
-        # Subtle inner top-half highlight to mimic light catching the rim
-        top_highlight = NSBezierPath.bezierPath()
-        top_highlight.moveToPoint_((pill_radius + 1.0, 1.0))
-        top_highlight.lineToPoint_((width - pill_radius - 1.0, 1.0))
-        top_highlight.setLineWidth_(0.6)
-        NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.35).set()
-        top_highlight.stroke()
-
-        # 3. Equalizer bars — 5, slender (2.5px) with airy 4.5px gap, bell-curve weighted
-        bar_width = 2.5
-        gap = 4.5
+        
+        # 1. Luxurious dark obsidian velvet pill background with ultra-clean rounded capsule
+        pill_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, height / 2.0, height / 2.0)
+        
+        # Deep near-black velvet fill (#141416 with 92% opacity)
+        NSColor.colorWithRed_green_blue_alpha_(0.08, 0.08, 0.09, 0.92).set()
+        pill_path.fill()
+        
+        # Crisp inner highlight / glowing edge border (Apple design language)
+        NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.18).set()
+        pill_path.setLineWidth_(1.0)
+        pill_path.stroke()
+        
+        # 2. Draw 5 premium rounded vertical equalizer bars with organic bell-curve weighting
+        bar_width = 3.0
+        gap = 4.0
         num_bars = 5
         total_bars_width = num_bars * bar_width + (num_bars - 1) * gap
         start_x = (width - total_bars_width) / 2.0
-
+        
         for i in range(num_bars):
-            # Bell-curve: center bars (i=2) reach max height
+            # Bell-curve weighting so center bars are taller (natural frequency spectrum)
             dist_from_center = abs(i - (num_bars - 1) / 2.0)
-            weight = 1.0 - (dist_from_center / ((num_bars - 1) / 2.0 + 1.0)) * 0.28
-
-            # Idle breathing — gentle even when silent
-            idle = math.sin(self._phase * 1.6 + i * 0.9) * 0.30 + 0.70
+            weight = 1.0 - (dist_from_center / ((num_bars - 1) / 2.0 + 1.0)) * 0.3
+            
+            # Idle breathing phase shift per bar (gently pulses in a wave when silent)
+            idle = math.sin(self._phase * 1.6 + i * 0.9) * 0.35 + 0.65
             idle_height = 5.0 + 3.0 * idle * weight
-
-            # Voice amplitude boost with per-bar phase variance
-            voice_factor = (0.35 + 0.65 * math.sin(self._phase * 2.8 + i * 1.2))
-            voice_height = 11.0 * self._volume * voice_factor * weight
-
-            bar_height = min(height - 8.0, idle_height + voice_height)
+            
+            # Voice amplitude boost (varies per bar for a dynamic graphic equalizer effect)
+            voice_factor = (0.4 + 0.6 * math.sin(self._phase * 2.8 + i * 1.2))
+            voice_height = 12.0 * self._volume * voice_factor * weight
+            
+            bar_height = min(height - 10.0, idle_height + voice_height)
+            
+            # Center the bar vertically
             bx = start_x + i * (bar_width + gap)
             by = (height - bar_height) / 2.0
+            
             bar_rect = NSMakeRect(bx, by, bar_width, bar_height)
-            bar_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                bar_rect, bar_width / 2.0, bar_width / 2.0
-            )
-
-            # Per-bar gradient: bright top → deep base (gives the "lit cylinder" feel)
+            bar_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bar_rect, bar_width / 2.0, bar_width / 2.0)
+            
+            # Ultra-clean aesthetic gradient color transition across the bars (Cyan -> Indigo -> Neon Pink)
             t = i / (num_bars - 1) if num_bars > 1 else 0.5
-            # Hue: cyan → indigo → pink across the spectrum
-            r_top, g_top, b_top = 0.18 + t * 0.82, 0.85 - t * 0.45, 1.0
-            r_bot, g_bot, b_bot = 0.45 + t * 0.45, 0.40 - t * 0.20, 0.95
-            bar_gradient = NSGradient.alloc().initWithColors_([
-                NSColor.colorWithRed_green_blue_alpha_(r_top, g_top, b_top, 1.0),
-                NSColor.colorWithRed_green_blue_alpha_(r_bot, g_bot, b_bot, 0.85),
-            ])
-
-            # Soft outer glow on the bar (sells the "this is alive" feel)
-            glow = NSShadow.alloc().init()
-            glow.setShadowBlurRadius_(4.0)
-            glow.setShadowOffset_((0.0, 0.0))
-            glow.setShadowColor_(
-                NSColor.colorWithRed_green_blue_alpha_(r_top, g_top, b_top, 0.55)
-            )
-            glow.set()
-
-            bar_gradient.drawInBezierPath_angle_(bar_path, 270.0)
+            r = 0.10 + t * 0.80
+            g = 0.80 - t * 0.50
+            b = 1.0
+            
+            # Dynamic opacity / glow booster on voice peaks
+            alpha = min(1.0, 0.8 + self._volume * 0.2)
+            
+            NSColor.colorWithRed_green_blue_alpha_(r, g, b, alpha).set()
+            bar_path.fill()
 
 
 class WaveformOverlayUI:
@@ -283,16 +259,9 @@ class WaveformOverlayUI:
         )
         panel.setOpaque_(False)
         panel.setBackgroundColor_(NSColor.clearColor())
-
-        # Configured soft drop shadow (3-4× better than setHasShadow_(True))
-        panel_shadow = NSShadow.alloc().init()
-        panel_shadow.setShadowBlurRadius_(22.0)
-        panel_shadow.setShadowOffset_((0.0, -3.0))
-        panel_shadow.setShadowColor_(
-            NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.55)
-        )
-        panel.setShadow_(panel_shadow)
-
+        
+        # Premium soft drop shadow for floating elevation (Wispr Flow style)
+        panel.setHasShadow_(True)
         panel.setIgnoresMouseEvents_(True)
         panel.setHidesOnDeactivate_(False)
         panel.setFloatingPanel_(True)
