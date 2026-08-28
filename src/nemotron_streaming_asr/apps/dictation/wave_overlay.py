@@ -1,0 +1,252 @@
+"""Floating click-through modern equalizer animation that follows the active text cursor (caret).
+
+Provides highly visual, modern recording feedback globally on macOS. Automatically detects the
+active text cursor (caret) or focused text box using macOS Accessibility APIs and positions
+itself right under it. If no caret is detected, it falls back to centering at the bottom of the
+screen (above the dock), matching Wispr Flow behavior.
+"""
+
+from __future__ import annotations
+
+import math
+import objc
+import threading
+from AppKit import (
+    NSView, NSColor, NSBezierPath, NSPanel, NSMakeRect, NSEvent, NSScreen,
+    NSRunLoop, NSDefaultRunLoopMode, NSDate, NSFloatingWindowLevel,
+    NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorFullScreenAuxiliary,
+    NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered
+)
+from ApplicationServices import (
+    AXUIElementCreateSystemWide, AXUIElementCopyAttributeValue,
+    AXUIElementCopyParameterizedAttributeValue, AXValueGetValue,
+    kAXFocusedUIElementAttribute, kAXSelectedTextRangeAttribute,
+    kAXBoundsForRangeParameterizedAttribute, kAXPositionAttribute, kAXSizeAttribute,
+    kAXValueCGPointType, kAXValueCGRectType, kAXValueCGSizeType
+)
+
+# ponytail: simple periodic bezier path redraw, upgrade to CoreAnimation layers if drawing ever exceeds 1% CPU
+
+def get_focused_caret_rect() -> tuple[float, float, float, float] | None:
+    """Attempt to get the screen rectangle of the active text caret or focused text box.
+    Returns (x, y, w, h) in accessibility coordinates (y=0 at top of main screen), or None.
+    """
+    try:
+        system_wide = AXUIElementCreateSystemWide()
+        if not system_wide:
+            return None
+            
+        err, focused_elem = AXUIElementCopyAttributeValue(system_wide, kAXFocusedUIElementAttribute, None)
+        if err != 0 or not focused_elem:
+            return None
+            
+        # 1. Try to get caret/selected text range bounds (finest precision)
+        err, selected_range = AXUIElementCopyAttributeValue(focused_elem, kAXSelectedTextRangeAttribute, None)
+        if err == 0 and selected_range:
+            err, bounds_val = AXUIElementCopyParameterizedAttributeValue(
+                focused_elem, kAXBoundsForRangeParameterizedAttribute, selected_range, None
+            )
+            if err == 0 and bounds_val:
+                success, rect = AXValueGetValue(bounds_val, kAXValueCGRectType, None)
+                if success and rect:
+                    return rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
+                    
+        # 2. Fallback: get the position and size of the focused text box itself
+        err, pos_val = AXUIElementCopyAttributeValue(focused_elem, kAXPositionAttribute, None)
+        err2, size_val = AXUIElementCopyAttributeValue(focused_elem, kAXSizeAttribute, None)
+        if err == 0 and err2 == 0 and pos_val and size_val:
+            success, pos = AXValueGetValue(pos_val, kAXValueCGPointType, None)
+            success2, size = AXValueGetValue(size_val, kAXValueCGSizeType, None)
+            if success and success2 and pos and size:
+                return pos.x, pos.y, size.width, size.height
+                
+    except Exception:
+        pass
+    return None
+
+
+class WaveformView(NSView):
+    def initWithFrame_(self, frame):
+        self = objc.super(WaveformView, self).initWithFrame_(frame)
+        if self:
+            self._phase = 0.0
+            self._volume = 0.15
+        return self
+        
+    def setPhase_(self, phase):
+        self._phase = phase
+        self.setNeedsDisplay_(True)
+        
+    def setVolume_(self, volume):
+        self._volume = volume
+        self.setNeedsDisplay_(True)
+        
+    def drawRect_(self, rect):
+        bounds = self.bounds()
+        width = bounds.size.width
+        height = bounds.size.height
+        
+        # 1. Draw a beautiful translucent pill/capsule background
+        pill_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, height / 2.0, height / 2.0)
+        
+        # Sleek dark translucent body
+        NSColor.colorWithRed_green_blue_alpha_(0.08, 0.08, 0.1, 0.88).set()
+        pill_path.fill()
+        
+        # Subtle white glow border
+        NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.12).set()
+        pill_path.setLineWidth_(1.0)
+        pill_path.stroke()
+        
+        # 2. Draw 5 rounded vertical bouncing audio level bars centered in the capsule
+        bar_width = 3.0
+        gap = 4.0
+        num_bars = 5
+        total_bars_width = num_bars * bar_width + (num_bars - 1) * gap
+        start_x = (width - total_bars_width) / 2.0
+        
+        for i in range(num_bars):
+            # Idle breathing phase shift per bar (gently pulses in a wave when silent)
+            idle = math.sin(self._phase * 1.5 + i * 1.0) * 0.4 + 0.6  # value in [0.2, 1.0]
+            idle_height = 4.0 + 3.0 * idle  # 4px to 7px baseline
+            
+            # Voice amplitude boost (varies per bar for a dynamic graphic equalizer effect)
+            voice_factor = (0.5 + 0.5 * math.sin(self._phase * 2.5 + i * 1.5))
+            voice_height = 14.0 * self._volume * voice_factor
+            
+            bar_height = min(height - 8.0, idle_height + voice_height)
+            
+            # Center the bar vertically
+            bx = start_x + i * (bar_width + gap)
+            by = (height - bar_height) / 2.0
+            
+            bar_rect = NSMakeRect(bx, by, bar_width, bar_height)
+            bar_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bar_rect, bar_width / 2.0, bar_width / 2.0)
+            
+            # Aesthetic gradient color transition across the bars (indigo-cyan to magenta-pink)
+            r = 0.15 + 0.18 * i  # from 0.15 to 0.87
+            g = 0.65 - 0.12 * i  # from 0.65 to 0.17
+            b = 1.0 - 0.08 * i   # from 1.0 to 0.68
+            
+            NSColor.colorWithRed_green_blue_alpha_(r, g, b, 0.9).set()
+            bar_path.fill()
+
+
+class WaveformOverlayUI:
+    """Floating click-through voice equalizer following the text input caret."""
+    
+    def __init__(self):
+        self._panel = None
+        self._view = None
+        self._phase = 0.0
+        self._target_volume = 0.15
+        self._current_volume = 0.15
+        self._lock = threading.Lock()
+        
+        # Dimensions for our sleek pill-shaped visualizer
+        self._panel_width = 72.0
+        self._panel_height = 24.0
+        
+    def status(self, message: str) -> None:
+        print(f"\r{message}", end="", flush=True)
+        
+    def on_partial(self, text: str) -> None:
+        print(f"\r{text}", end="", flush=True)
+        
+    def set_volume(self, rms: float) -> None:
+        with self._lock:
+            # Map typical speech RMS energy (~0.01 to 0.15) to visible scale [0.15, 1.0]
+            self._target_volume = max(0.15, min(1.0, rms * 7.5))
+            
+    def tick(self) -> None:
+        """Called periodically on the main thread during recording to update position & animation."""
+        if self._panel is None:
+            self._panel, self._view = self._build_panel()
+            
+        # Advance animation phase
+        self._phase += 0.15
+        if self._phase > 2 * math.pi:
+            self._phase -= 2 * math.pi
+            
+        # Smooth volume transitions via a low-pass filter
+        with self._lock:
+            self._current_volume = 0.75 * self._current_volume + 0.25 * self._target_volume
+            
+        self._view.setPhase_(self._phase)
+        self._view.setVolume_(self._current_volume)
+        
+        # Fetch screen dimensions
+        screen_frame = NSScreen.screens()[0].frame()
+        screen_width = screen_frame.size.width
+        screen_height = screen_frame.size.height
+        
+        # Detect active focused element or text caret bounds
+        rect = get_focused_caret_rect()
+        if rect is not None:
+            cx, cy_ax, cw, ch = rect
+            # Convert Accessibility top-left origin coordinates to AppKit bottom-left origin coordinates
+            cy = screen_height - cy_ax
+            
+            # Position centered horizontally right below the caret/textbox
+            if cw < 6.0:  # fine caret line
+                x = cx - (self._panel_width / 2.0)
+            else:  # text selection or box
+                x = cx + (cw - self._panel_width) / 2.0
+            y = cy - ch - self._panel_height - 6.0
+        else:
+            # Fallback: center horizontally near the bottom of the screen (above the dock)
+            x = (screen_width - self._panel_width) / 2.0
+            y = 55.0
+            
+        # Bound coordinates to screen boundaries
+        x = max(10.0, min(screen_width - self._panel_width - 10.0, x))
+        y = max(10.0, min(screen_height - self._panel_height - 10.0, y))
+        
+        new_origin = NSMakeRect(x, y, self._panel_width, self._panel_height)
+        self._panel.setFrame_display_(new_origin, True)
+        
+        # Pump the Cocoa event loop briefly
+        NSRunLoop.currentRunLoop().runMode_beforeDate_(
+            NSDefaultRunLoopMode, NSDate.dateWithTimeIntervalSinceNow_(0.005)
+        )
+        
+    def close(self) -> None:
+        """Hide and release the floating panel when done."""
+        if self._panel is not None:
+            self._panel.orderOut_(None)
+            self._panel = None
+            self._view = None
+            self._target_volume = 0.15
+            self._current_volume = 0.15
+            print() # complete the console line
+            
+    def _build_panel(self):
+        screen_frame = NSScreen.screens()[0].frame()
+        # Default starting position centered near the bottom of the screen
+        x = (screen_frame.size.width - self._panel_width) / 2.0
+        y = 55.0
+        rect = NSMakeRect(x, y, self._panel_width, self._panel_height)
+        
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            rect,
+            NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
+            NSBackingStoreBuffered,
+            False,
+        )
+        panel.setLevel_(NSFloatingWindowLevel)
+        panel.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+        )
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(True)  # Beautiful soft shadow for depth
+        panel.setIgnoresMouseEvents_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setFloatingPanel_(True)
+        
+        view = WaveformView.alloc().initWithFrame_(NSMakeRect(0, 0, self._panel_width, self._panel_height))
+        panel.contentView().addSubview_(view)
+        panel.orderFrontRegardless()
+        
+        return panel, view

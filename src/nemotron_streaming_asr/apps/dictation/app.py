@@ -28,6 +28,7 @@ import argparse
 import sys
 import threading
 import time
+import numpy as np
 from typing import Optional
 
 from nemotron_streaming_asr import NemotronStreamingSession
@@ -89,7 +90,14 @@ class DictationApp:
         self.att_context_size = att_context_size
         self.insert = insert
 
-        self._ui = ui or ConsoleUI()
+        if ui is None:
+            try:
+                from .wave_overlay import WaveformOverlayUI
+                self._ui = WaveformOverlayUI()
+            except Exception:
+                self._ui = ConsoleUI()
+        else:
+            self._ui = ui
         self._recorder = recorder or MicrophoneRecorder()
         self._insertion = TextInsertionService()
 
@@ -117,7 +125,13 @@ class DictationApp:
         self._hotkey.start()
         try:
             while True:
-                time.sleep(0.2)
+                if self._recording and hasattr(self._ui, "tick"):
+                    self._ui.tick()
+                    time.sleep(0.01)
+                else:
+                    if hasattr(self._ui, "close"):
+                        self._ui.close()
+                    time.sleep(0.1)
         except KeyboardInterrupt:
             pass
         finally:
@@ -154,8 +168,9 @@ class DictationApp:
     def stop_recording(self) -> None:
         """Hotkey released/tapped again: signal the worker to drain and finalize."""
         if self._recording:
+            if hasattr(self._ui, "close"):
+                self._ui.close()
             self._stop_event.set()
-
     # -------------------------------------------------------- recording loop
     def _recording_loop(self) -> None:
         self._ui.status("Listening...")
@@ -164,6 +179,9 @@ class DictationApp:
                 block = self._recorder.poll(timeout=0.02)
                 if block is None:
                     continue
+                if hasattr(self._ui, "set_volume"):
+                    rms = float(np.sqrt(np.mean(np.square(block))))
+                    self._ui.set_volume(rms)
                 self._feed_and_step(block)
 
             # Stop capturing, then process every block already received.
