@@ -28,18 +28,32 @@ import argparse
 import sys
 import threading
 import time
-import numpy as np
 from typing import Optional
 
 from nemotron_streaming_asr import NemotronStreamingSession
 
+from .display import RecordingDisplay
 from .hotkey import GlobalHotkey, PynputGlobalHotkey
 from .microphone import MicrophoneRecorder
 from .text_insertion import TextInsertionService
 from .transcript import LiveTranscriptController
 
 
-class ConsoleUI:
+def build_display():
+    """Construct the richest display available (overlay, else console).
+
+    The overlay needs macOS AppKit; anywhere it cannot be built (CI, Linux,
+    missing permissions plumbing) this silently falls back to ``ConsoleUI``.
+    """
+    try:
+        from .wave_overlay import WaveformOverlayUI
+
+        return WaveformOverlayUI()
+    except Exception:
+        return ConsoleUI()
+
+
+class ConsoleUI(RecordingDisplay):
     """Minimal console UI: only the newest cumulative transcript is shown.
 
     Each partial update overwrites the current console line, matching the
@@ -80,39 +94,65 @@ class DictationApp:
         model,
         language: str = "en-US",
         att_context_size=None,
-        hotkey: Optional[GlobalHotkey] = None,
-        recorder=None,
+        *,
+        ui: RecordingDisplay,
+        recorder,
+        insertion: TextInsertionService,
+        hotkey: GlobalHotkey,
         insert: bool = True,
-        ui=None,
     ):
         self.model = model
         self.language = language
         self.att_context_size = att_context_size
         self.insert = insert
 
-        if ui is None:
-            try:
-                from .wave_overlay import WaveformOverlayUI
-                self._ui = WaveformOverlayUI()
-            except Exception:
-                self._ui = ConsoleUI()
-        else:
-            self._ui = ui
-        self._recorder = recorder or MicrophoneRecorder()
-        self._insertion = TextInsertionService()
+        self._ui = ui
+        self._recorder = recorder
+        self._insertion = insertion
 
         self.transcript = LiveTranscriptController(on_update=self._ui.on_partial)
-        self._hotkey = hotkey or PynputGlobalHotkey(key="alt_r")  # right Option
+        self._hotkey = hotkey
         self._hotkey.on_press = self.start_recording
         self._hotkey.on_release = self.stop_recording
 
         self._recording = False
-        self._ui_visible = False
         self._stop_event = threading.Event()
         self._session: Optional[NemotronStreamingSession] = None
         self._worker: Optional[threading.Thread] = None
 
+    @classmethod
+    def build_default(
+        cls,
+        model,
+        language: str = "en-US",
+        att_context_size=None,
+        insert: bool = True,
+    ) -> "DictationApp":
+        """Wire a production app: overlay (or console), mic, inserter, hotkey."""
+        hotkey = PynputGlobalHotkey(key="alt_r")  # right Option
+        return cls(
+            model,
+            language=language,
+            att_context_size=att_context_size,
+            ui=build_display(),
+            recorder=MicrophoneRecorder(),
+            insertion=TextInsertionService(),
+            hotkey=hotkey,
+            insert=insert,
+        )
+
     # ------------------------------------------------------------- lifecycle
+    def pump_display(self) -> None:
+        """Single main-thread display step: hide when idle, then tick.
+
+        UI teardown is deferred here (never in ``stop_recording``) because
+        AppKit must only be touched on the main thread — ``stop_recording``
+        runs on the hotkey listener thread.
+        """
+        if not self._recording:
+            self._ui.hide()
+        self._ui.tick()
+
     def run(self) -> None:
         """Start the hotkey listener and block until interrupted."""
         self._ui.status(
@@ -126,19 +166,15 @@ class DictationApp:
         self._hotkey.start()
         try:
             while True:
-                if self._ui_visible and hasattr(self._ui, "tick"):
-                    self._ui.tick()
-                    time.sleep(0.01)
-                else:
-                    if hasattr(self._ui, "close"):
-                        self._ui.close()
-                    time.sleep(0.1)
+                self.pump_display()
+                time.sleep(0.01)
         except KeyboardInterrupt:
             pass
         finally:
             self.stop_recording()
             if self._worker is not None:
                 self._worker.join(timeout=5)
+            self._ui.hide()  # main thread here: safe to tear down directly
             self._hotkey.stop()
 
     def start_recording(self) -> None:
@@ -153,7 +189,7 @@ class DictationApp:
             if self._recording:  # still busy -> drop this tap
                 return
         self._recording = True
-        self._ui_visible = True
+        self._ui.show()
         self._stop_event.clear()
         self._session = NemotronStreamingSession(
             self.model,
@@ -168,9 +204,12 @@ class DictationApp:
         self._worker.start()
 
     def stop_recording(self) -> None:
-        """Hotkey released/tapped again: signal the worker to drain and finalize."""
+        """Hotkey released/tapped again: signal the worker to drain and finalize.
+
+        Only signals; the display is hidden later on the main thread by
+        :meth:`pump_display` (AppKit is main-thread-only).
+        """
         if self._recording:
-            self._ui_visible = False
             self._stop_event.set()
     # -------------------------------------------------------- recording loop
     def _recording_loop(self) -> None:
@@ -180,9 +219,7 @@ class DictationApp:
                 block = self._recorder.poll(timeout=0.02)
                 if block is None:
                     continue
-                if hasattr(self._ui, "set_volume"):
-                    rms = float(np.sqrt(np.mean(np.square(block))))
-                    self._ui.set_volume(rms)
+                self._ui.set_level(block)
                 self._feed_and_step(block)
 
             # Stop capturing, then process every block already received.
@@ -251,7 +288,7 @@ def main() -> None:
     model = load(args.model)
     model.eval()
 
-    app = DictationApp(
+    app = DictationApp.build_default(
         model,
         language=args.language,
         att_context_size=[56, args.lookahead],

@@ -27,12 +27,12 @@ Real-time offline streaming ASR for NVIDIA Nemotron 3.5 (RNNT) on Apple Silicon,
 - `pipeline/decoder.py` — `StreamingDecoder`: stateful greedy RNN-T.
 - `pipeline/session.py` — `NemotronStreamingSession`: orchestrator; `feed(pcm)` → `step()` per chunk (cumulative `AlignedResult`), `finish()` flushes the trailing partial, `reset()` starts a new utterance. Latency = `att_context_size=[56, lookahead]`, lookahead ∈ {0,1,3,6,13} (80 ms frames). `language="auto"` enables live language detection: the decoder latches the first emitted `<xx-XX>` tag (`decoder.detected_language` / `session.detected_language`) and the session switches the encoder prompt for later chunks.
 - `benchmark/` — `PerformanceStats` (optional, zero-impact), `StreamingBenchmark` runner, system/memory metrics.
-- `apps/dictation/` — layered: `hotkey.py` (pynput, right-Option tap-to-toggle) → `app.py` (fresh session per recording) → `microphone.py` (20 ms blocks) → `transcript.py` (cumulative) → `text_insertion.py` (clipboard-safe ⌘V via `CGEventPost`). The recording only stops on a hotkey tap — pauses for thinking are fine, there is no auto-stop and no UI overlay.
+- `apps/dictation/` — layered: `hotkey.py` (pynput, right-Option tap-to-toggle) → `app.py` (fresh session per recording) → `microphone.py` (20 ms blocks) → `transcript.py` (cumulative) → `text_insertion.py` (clipboard-safe ⌘V via `CGEventPost`). Displays sit behind the `display.py` `RecordingDisplay` seam (`status/on_partial/set_level/show/hide/tick`; overlay with console fallback). Caret sensing lives in `caret.py` (`place_panel` is pure and headless-testable). The recording only stops on a hotkey tap — pauses for thinking are fine, there is no auto-stop.
 
 ## Conventions
 
 - `session.feed(block)` then `session.step()` per chunk; always `session.finish()` before reading final text.
-- Dictation layers are constructor-injected (`hotkey`/`recorder`/`ui`) — swap without touching the app.
+- Dictation layers are constructor-injected (`hotkey`/`recorder`/`insertion`/`ui`) — swap without touching the app. Production wiring lives in `DictationApp.build_default()`; `build_display()` picks overlay-or-console.
 - Hotkey: `PynputGlobalHotkey(key="alt_r")` — tap-to-toggle only, right Option = `alt_r` (left Option is `alt` and never triggers). Release alone never stops — only a fresh trigger press does. No modifier combos or hold mode.
 - macOS permissions: **Input Monitoring** for pynput, **Accessibility** for the synthetic ⌘V paste. App warns at startup if paste permission is missing.
 - Tests use `tiny_model` + `seeded_audio` session fixtures from `tests/conftest.py` (deterministic RNG) and prove frame/token equivalence to the reference impl.

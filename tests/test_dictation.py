@@ -4,6 +4,11 @@ end-to-end recording lifecycle with a fake recorder (no microphone/hardware).
 
 import time
 
+from nemotron_streaming_asr.apps.dictation.hotkey import GlobalHotkey
+from nemotron_streaming_asr.apps.dictation.text_insertion import (
+    TextInsertionService,
+)
+
 
 def _result(text):
     class R:
@@ -121,9 +126,9 @@ def test_rapid_stop_then_start_is_not_swallowed(tiny_model):
 
     recorder = SlowRecorder()
     ui_lines = []
-    quiet_ui = type("UI", (), {"status": ui_lines.append,
-                               "on_partial": lambda self, t: None})()
+    quiet_ui = _quiet_ui(ui_lines)
     app = DictationApp(tiny_model, language="en-US", recorder=recorder,
+                       insertion=_FakeInsertion(), hotkey=_FakeHotkey(),
                        insert=False, ui=quiet_ui)
 
     app.start_recording()
@@ -179,6 +184,42 @@ def test_microphone_recorder_poll_empty_without_device():
 
 
 # ---------------------------------------------------------------------- app
+class _FakeHotkey(GlobalHotkey):
+    """Stand-in for the hotkey backend: the app only assigns callbacks on it."""
+
+    def __init__(self):
+        super().__init__()
+        self.started = False
+        self.stopped = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+class _FakeInsertion(TextInsertionService):
+    """Stand-in for the inserter: records pasted text instead of pasting."""
+
+    def __init__(self):
+        super().__init__()
+        self.inserted = []
+
+    def insert(self, text):
+        self.inserted.append(text)
+
+
+def _quiet_ui(lines, partials=None):
+    """A minimal RecordingDisplay: only status/on_partial, rest are no-ops."""
+    from nemotron_streaming_asr.apps.dictation.display import RecordingDisplay
+
+    return type("UI", (RecordingDisplay,), {
+        "status": lambda self, m: lines.append(m),
+        "on_partial": lambda self, t: (partials.append(t) if partials is not None else None),
+    })()
+
+
 class _FakeRecorder:
     def __init__(self):
         self.started = False
@@ -208,10 +249,10 @@ def test_app_full_lifecycle_with_fake_recorder(tiny_model, seeded_audio):
 
     recorder = _FakeRecorder()
     ui_lines = []
-    ui = type("UI", (), {"status": ui_lines.append,
-                          "on_partial": lambda self, t: None})()
+    ui = _quiet_ui(ui_lines)
 
     app = DictationApp(tiny_model, language="en-US", recorder=recorder,
+                       insertion=_FakeInsertion(), hotkey=_FakeHotkey(),
                        insert=False, ui=ui)
     assert app._recording is False
 
@@ -240,9 +281,9 @@ def test_recording_produces_live_transcript_updates(tiny_model, seeded_audio):
 
     recorder = MicrophoneRecorderNoDevice(seeded_audio)
     ui_lines = []
-    quiet_ui = type("UI", (), {"status": ui_lines.append,
-                               "on_partial": lambda self, t: None})()
+    quiet_ui = _quiet_ui(ui_lines)
     app = DictationApp(tiny_model, language="en-US", recorder=recorder,
+                       insertion=_FakeInsertion(), hotkey=_FakeHotkey(),
                        insert=False, ui=quiet_ui)
     # Use a plain (non-console) UI so we can inspect partials.
     partials = []
@@ -430,28 +471,64 @@ def _build_overlay_module(monkeypatch, *, caret_rect=None, screen=(1920, 1080),
     return wo
 
 
-def test_wave_overlay_set_volume_clamps_to_visible_range(monkeypatch):
-    """RMS is mapped to [0.15, 1.0] and clamped on both ends."""
+def _build_caret_module(monkeypatch, *, ax=None):
+    """Import caret.py with ApplicationServices stubbed (no AppKit needed).
+
+    ``caret`` has no top-level native imports (AX/AppKit are lazy),
+    so the default ``ax`` fake only matters for get_focused_caret_rect tests;
+    place_panel tests import the module directly with no stubbing at all.
+    """
+    import sys
+    import types
+
+    if ax is None:
+        ax = types.SimpleNamespace(
+            AXUIElementCreateSystemWide=lambda: None,
+            AXUIElementCopyAttributeValue=lambda *a, **k: (-1, None),
+            AXUIElementCopyParameterizedAttributeValue=lambda *a, **k: (-1, None),
+            AXValueGetValue=lambda *a, **k: (False, None),
+            kAXFocusedUIElementAttribute="kAXFocusedUIElementAttribute",
+            kAXSelectedTextRangeAttribute="kAXSelectedTextRangeAttribute",
+            kAXBoundsForRangeParameterizedAttribute="kAXBoundsForRangeParameterizedAttribute",
+            kAXPositionAttribute="kAXPositionAttribute",
+            kAXSizeAttribute="kAXSizeAttribute",
+            kAXValueCGPointType=0,
+            kAXValueCGRectType=0,
+            kAXValueCGSizeType=0,
+        )
+    monkeypatch.delitem(
+        sys.modules, "nemotron_streaming_asr.apps.dictation.caret", raising=False
+    )
+    monkeypatch.setitem(sys.modules, "ApplicationServices", ax)
+    from nemotron_streaming_asr.apps.dictation import caret as caret_module
+    return caret_module
+
+
+def test_wave_overlay_set_level_clamps_to_visible_range(monkeypatch):
+    """Raw PCM RMS is mapped to [0.15, 1.0] and clamped on both ends."""
+    import numpy as np
     wo = _build_overlay_module(monkeypatch)
     ui = wo.WaveformOverlayUI()
-    ui.set_volume(0.0)    # silent -> floor at 0.15
+    ui.set_level(np.zeros(320, dtype=np.float32))    # silent -> floor at 0.15
     assert ui._target_volume == 0.15
-    ui.set_volume(0.1)    # typical speech -> 0.75
-    assert abs(ui._target_volume - 0.75) < 1e-9
-    ui.set_volume(1.0)    # screaming -> ceiling at 1.0
+    ui.set_level(np.ones(320, dtype=np.float32) * 0.1)  # typical speech -> 0.75
+    assert abs(ui._target_volume - 0.75) < 1e-6
+    ui.set_level(np.ones(320, dtype=np.float32))     # screaming -> ceiling at 1.0
     assert ui._target_volume == 1.0
 
 
-def test_wave_overlay_set_volume_is_thread_safe(monkeypatch):
-    """Concurrent set_volume calls must not corrupt _target_volume."""
+def test_wave_overlay_set_level_is_thread_safe(monkeypatch):
+    """Concurrent set_level calls must not corrupt _target_volume."""
     import threading
+    import numpy as np
     wo = _build_overlay_module(monkeypatch)
     ui = wo.WaveformOverlayUI()
+    block = np.ones(320, dtype=np.float32) * 0.05
     errors = []
     def hammer():
         try:
             for _ in range(500):
-                ui.set_volume(0.05)
+                ui.set_level(block)
         except Exception as e:
             errors.append(e)
     threads = [threading.Thread(target=hammer) for _ in range(4)]
@@ -462,47 +539,112 @@ def test_wave_overlay_set_volume_is_thread_safe(monkeypatch):
     assert 0.15 <= ui._target_volume <= 1.0
 
 
-def test_wave_overlay_close_is_idempotent(monkeypatch):
-    """close() must be safe to call when the panel was never built, and
-    again after it was built (the run-loop close fix lives here)."""
+def test_wave_overlay_hide_is_idempotent(monkeypatch):
+    """hide() must be safe to call when the panel was never built, and
+    again after it was built (the run-loop hide fix lives here)."""
     wo = _build_overlay_module(monkeypatch)
     ui = wo.WaveformOverlayUI()
-    # First close with no panel: must not raise.
-    ui.close()
-    # Stub a panel+view, then close twice: must not raise either time.
+    # First hide with no panel: must not raise.
+    ui.hide()
+    # Stub a panel+view, then hide twice: must not raise either time.
     ui._panel = _StubPanel()
     ui._view = _StubView()
     ui._current_volume = 0.9
-    ui.close()
+    ui.hide()
     assert ui._panel is None
     assert ui._view is None
-    assert ui._current_volume == 0.15  # reset on close
-    # Calling close again on a torn-down state is still safe.
-    ui.close()
+    assert ui._current_volume == 0.15  # reset on hide
+    # Calling hide again on a torn-down state is still safe.
+    ui.hide()
 
 
 def test_get_focused_caret_rect_returns_none_when_no_focus(monkeypatch):
     """When AX has no focused element (err != 0), the detector returns None."""
-    wo = _build_overlay_module(monkeypatch)
-    assert wo.get_focused_caret_rect() is None
+    caret = _build_caret_module(monkeypatch)
+    assert caret.get_focused_caret_rect() is None
 
 
 def test_get_focused_caret_rect_swallows_exceptions(monkeypatch):
     """If anything inside the AX calls raises, the detector must return None
     (it must never crash the recording loop)."""
-    wo = _build_overlay_module(monkeypatch)
+    import types
+
     def boom():
         raise RuntimeError("AX subsystem exploded")
-    monkeypatch.setattr(wo, "AXUIElementCreateSystemWide", boom)
-    assert wo.get_focused_caret_rect() is None
+
+    fake_ax = types.SimpleNamespace(
+        AXUIElementCreateSystemWide=boom,
+        AXUIElementCopyAttributeValue=lambda *a, **k: (-1, None),
+        AXUIElementCopyParameterizedAttributeValue=lambda *a, **k: (-1, None),
+        AXValueGetValue=lambda *a, **k: (False, None),
+        kAXFocusedUIElementAttribute="kAXFocusedUIElementAttribute",
+        kAXSelectedTextRangeAttribute="kAXSelectedTextRangeAttribute",
+        kAXBoundsForRangeParameterizedAttribute="kAXBoundsForRangeParameterizedAttribute",
+        kAXPositionAttribute="kAXPositionAttribute",
+        kAXSizeAttribute="kAXSizeAttribute",
+        kAXValueCGPointType=0,
+        kAXValueCGRectType=0,
+        kAXValueCGSizeType=0,
+    )
+    caret = _build_caret_module(monkeypatch, ax=fake_ax)
+    assert caret.get_focused_caret_rect() is None
 
 
-def test_dictation_app_falls_back_to_console_ui(tiny_model, monkeypatch):
-    """If wave_overlay fails to import (e.g. on a non-macOS host), the
-    app must silently fall back to ConsoleUI rather than crash."""
+# ------------------------------------------------- caret.place_panel (pure)
+# Placement math needs no AppKit: plain tuples in, clamped origin out.
+
+def test_place_panel_under_fine_caret_line():
+    """A fine caret (w < 6) centers the panel below the caret (AX y flipped)."""
+    from nemotron_streaming_asr.apps.dictation.caret import place_panel
+
+    # screen 1920x1080, panel 72x24, caret at AX (500, 200, w=2, h=16)
+    x, y = place_panel((500, 200, 2, 16), None, (1920, 1080), (72, 24))
+    assert x == 500 - 36.0
+    assert y == (1080 - 200) - 16 - 24 - 6.0
+
+
+def test_place_panel_under_text_box():
+    """A wide selection/box centers the panel under the box, not the caret."""
+    from nemotron_streaming_asr.apps.dictation.caret import place_panel
+
+    x, y = place_panel((500, 200, 200, 30), None, (1920, 1080), (72, 24))
+    assert x == 500 + (200 - 72) / 2.0
+    assert y == (1080 - 200) - 30 - 24 - 6.0
+
+
+def test_place_panel_mouse_fallback():
+    """No caret: the panel anchors offset from the mouse cursor."""
+    from nemotron_streaming_asr.apps.dictation.caret import place_panel
+
+    x, y = place_panel(None, (100, 900), (1920, 1080), (72, 24))
+    assert (x, y) == (112.0, 900 - 24 - 12.0)
+
+
+def test_place_panel_screen_center_last_resort():
+    """No caret and no mouse: centered horizontally near the bottom."""
+    from nemotron_streaming_asr.apps.dictation.caret import place_panel
+
+    x, y = place_panel(None, None, (1920, 1080), (72, 24))
+    assert (x, y) == ((1920 - 72) / 2.0, 55.0)
+
+
+def test_place_panel_clamps_to_screen():
+    """A caret at the screen edge must not push the panel off-screen."""
+    from nemotron_streaming_asr.apps.dictation.caret import place_panel
+
+    x, y = place_panel((5, 5, 2, 16), (1919, 1079), (1920, 1080), (72, 24))
+    assert 10.0 <= x <= 1920 - 72 - 10.0
+    assert 10.0 <= y <= 1080 - 24 - 10.0
+    # ... and the mouse fallback clamps too, without a caret anywhere near.
+    x, y = place_panel(None, (0, 0), (1920, 1080), (72, 24))
+    assert (x, y) == (12.0, 10.0)
+
+
+def test_build_display_falls_back_to_console_ui(tiny_model, monkeypatch):
+    """If wave_overlay fails to import (e.g. on a non-macOS host),
+    build_display() must silently fall back to ConsoleUI rather than crash."""
     import builtins
-    from nemotron_streaming_asr.apps.dictation.app import DictationApp, ConsoleUI
-    from nemotron_streaming_asr.apps.dictation import app as app_module
+    from nemotron_streaming_asr.apps.dictation.app import build_display, ConsoleUI
 
     def _explode(name, *a, **k):
         if name.endswith("wave_overlay"):
@@ -510,36 +652,43 @@ def test_dictation_app_falls_back_to_console_ui(tiny_model, monkeypatch):
         return real_import(name, *a, **k)
     real_import = builtins.__import__
     monkeypatch.setattr(builtins, "__import__", _explode)
-    recorder = _FakeRecorder()
-    app = DictationApp(tiny_model, language="en-US", recorder=recorder,
-                       insert=False)
-    assert isinstance(app._ui, ConsoleUI)
-    # Restore builtins so later tests can import normally.
-    monkeypatch.setattr(builtins, "__import__", real_import)
+    try:
+        assert isinstance(build_display(), ConsoleUI)
+    finally:
+        # Restore builtins so later tests can import normally.
+        monkeypatch.setattr(builtins, "__import__", real_import)
 
 
-def test_dictation_app_visibility_flag_tracks_recording(tiny_model):
-    """_ui_visible must be set when recording starts and cleared when it stops
-    (drives the tick/close branch in run())."""
+def test_display_show_hide_tracks_recording(tiny_model):
+    """show() must be called when recording starts; hide() must NOT happen
+    synchronously in stop_recording (hotkey thread can't touch AppKit) but
+    on the next main-thread pump_display()."""
     from nemotron_streaming_asr.apps.dictation.app import DictationApp
+    from nemotron_streaming_asr.apps.dictation.display import RecordingDisplay
 
-    recorder = _FakeRecorder()
-    ui = type("UI", (), {"status": lambda self, m: None,
-                          "on_partial": lambda self, t: None})()
-    app = DictationApp(tiny_model, language="en-US", recorder=recorder,
+    calls = []
+    ui = type("UI", (RecordingDisplay,), {
+        "status": lambda self, m: None,
+        "on_partial": lambda self, t: None,
+        "show": lambda self: calls.append("show"),
+        "hide": lambda self: calls.append("hide"),
+    })()
+    app = DictationApp(tiny_model, language="en-US", recorder=_FakeRecorder(),
+                       insertion=_FakeInsertion(), hotkey=_FakeHotkey(),
                        insert=False, ui=ui)
-    assert app._ui_visible is False
     app.start_recording()
-    assert app._ui_visible is True
+    assert calls == ["show"]
     app.stop_recording()
     app._worker.join(timeout=10)
-    # After the worker drains and finalizes, the app is back to idle.
-    assert app._ui_visible is False
+    # stop_recording only signals; teardown is deferred to the main thread.
+    assert calls == ["show"]
+    app.pump_display()
+    assert calls == ["show", "hide"]
 
 
-def test_recording_loop_pushes_rms_to_overlay(tiny_model, monkeypatch):
-    """While recording, each audio block is converted to RMS and pushed
-    to the UI's set_volume (so the visualizer reacts to voice)."""
+def test_recording_loop_pushes_blocks_to_display(tiny_model, monkeypatch):
+    """While recording, each raw audio block is pushed to the UI's set_level
+    (the overlay computes RMS itself, so the visualizer reacts to voice)."""
     import numpy as np
     from nemotron_streaming_asr.apps.dictation.app import DictationApp
 
@@ -562,15 +711,16 @@ def test_recording_loop_pushes_rms_to_overlay(tiny_model, monkeypatch):
             return rest
 
     # Use the real WaveformOverlayUI (stubbed AppKit) so the test exercises
-    # the full RMS-to-visible-range pipeline that ships in production.
+    # the full block-to-visible-range pipeline that ships in production.
     wo = _build_overlay_module(monkeypatch)
-    samples = []  # capture every (raw_rms, target_volume) the app pushes
-    real_set_volume = wo.WaveformOverlayUI.set_volume
-    def spy_set_volume(self, rms):
-        samples.append(rms)
-        real_set_volume(self, rms)
-    monkeypatch.setattr(wo.WaveformOverlayUI, "set_volume", spy_set_volume)
+    samples = []  # capture every raw block the app pushes
+    real_set_level = wo.WaveformOverlayUI.set_level
+    def spy_set_level(self, block):
+        samples.append(block)
+        real_set_level(self, block)
+    monkeypatch.setattr(wo.WaveformOverlayUI, "set_level", spy_set_level)
     app = DictationApp(tiny_model, language="en-US", recorder=_LoudQuietRecorder(),
+                       insertion=_FakeInsertion(), hotkey=_FakeHotkey(),
                        insert=False, ui=wo.WaveformOverlayUI())
     app.start_recording()
     app._worker.join(timeout=10)
@@ -578,6 +728,8 @@ def test_recording_loop_pushes_rms_to_overlay(tiny_model, monkeypatch):
     assert len(samples) >= 4
     # The loud block (RMS=0.5) must have been pushed before the quiet block
     # (RMS=0.0), and must be a larger RMS value.
-    assert samples[0] > samples[1]
+    def _rms(block):
+        return float(np.sqrt(np.mean(np.square(block, dtype=np.float64))))
+    assert _rms(samples[0]) > _rms(samples[1])
     # The current target volume (clamped) is in the visible range.
     assert 0.15 <= app._ui._target_volume <= 1.0

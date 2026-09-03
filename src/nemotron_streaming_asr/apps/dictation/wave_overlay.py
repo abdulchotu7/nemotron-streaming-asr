@@ -10,56 +10,15 @@ from __future__ import annotations
 import math
 import objc
 import threading
+import numpy as np
 from AppKit import (
-    NSView, NSColor, NSBezierPath, NSPanel, NSMakeRect, NSEvent, NSScreen,
+    NSView, NSColor, NSBezierPath, NSPanel, NSMakeRect, NSScreen,
     NSRunLoop, NSDefaultRunLoopMode, NSDate, NSFloatingWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered
 )
-from ApplicationServices import (
-    AXUIElementCreateSystemWide, AXUIElementCopyAttributeValue,
-    AXUIElementCopyParameterizedAttributeValue, AXValueGetValue,
-    kAXFocusedUIElementAttribute, kAXSelectedTextRangeAttribute,
-    kAXBoundsForRangeParameterizedAttribute, kAXPositionAttribute, kAXSizeAttribute,
-    kAXValueCGPointType, kAXValueCGRectType, kAXValueCGSizeType
-)
-
-def get_focused_caret_rect() -> tuple[float, float, float, float] | None:
-    """Attempt to get the screen rectangle of the active text caret or focused text box.
-    Returns (x, y, w, h) in accessibility coordinates (y=0 at top of main screen), or None.
-    """
-    try:
-        system_wide = AXUIElementCreateSystemWide()
-        if not system_wide:
-            return None
-            
-        err, focused_elem = AXUIElementCopyAttributeValue(system_wide, kAXFocusedUIElementAttribute, None)
-        if err != 0 or not focused_elem:
-            return None
-            
-        # 1. Try to get caret/selected text range bounds (finest precision)
-        err, selected_range = AXUIElementCopyAttributeValue(focused_elem, kAXSelectedTextRangeAttribute, None)
-        if err == 0 and selected_range:
-            err, bounds_val = AXUIElementCopyParameterizedAttributeValue(
-                focused_elem, kAXBoundsForRangeParameterizedAttribute, selected_range, None
-            )
-            if err == 0 and bounds_val:
-                success, rect = AXValueGetValue(bounds_val, kAXValueCGRectType, None)
-                if success and rect:
-                    return rect.origin.x, rect.origin.y, rect.size.width, rect.size.height
-                    
-        # 2. Fallback: get the position and size of the focused text box itself
-        err, pos_val = AXUIElementCopyAttributeValue(focused_elem, kAXPositionAttribute, None)
-        err2, size_val = AXUIElementCopyAttributeValue(focused_elem, kAXSizeAttribute, None)
-        if err == 0 and err2 == 0 and pos_val and size_val:
-            success, pos = AXValueGetValue(pos_val, kAXValueCGPointType, None)
-            success2, size = AXValueGetValue(size_val, kAXValueCGSizeType, None)
-            if success and success2 and pos and size:
-                return pos.x, pos.y, size.width, size.height
-                
-    except Exception:
-        pass
-    return None
+from .caret import get_focused_caret_rect, get_mouse_point, place_panel
+from .display import RecordingDisplay
 
 
 class WaveformView(NSView):
@@ -127,12 +86,13 @@ class WaveformView(NSView):
             bar_path.fill()
 
 
-class WaveformOverlayUI:
+class WaveformOverlayUI(RecordingDisplay):
     """Floating click-through voice equalizer following the text input caret."""
     
     def __init__(self):
         self._panel = None
         self._view = None
+        self._visible = False
         self._phase = 0.0
         self._target_volume = 0.15
         self._current_volume = 0.15
@@ -148,14 +108,29 @@ class WaveformOverlayUI:
     def on_partial(self, text: str) -> None:
         print(f"\r{text}", end="", flush=True)
         
-    def set_volume(self, rms: float) -> None:
+    def set_level(self, block) -> None:
+        """Accept one raw PCM block; map its RMS to the visible range.
+
+        Runs on the recording worker thread (lock-protected). Typical speech
+        RMS energy (~0.01 to 0.15) maps to the visible scale [0.15, 1.0].
+        """
+        rms = float(np.sqrt(np.mean(np.square(block, dtype=np.float64))))
         with self._lock:
-            # Map typical speech RMS energy (~0.01 to 0.15) to visible scale [0.15, 1.0]
             self._target_volume = max(0.15, min(1.0, rms * 7.5))
+
+    def show(self) -> None:
+        """Mark the display visible; the panel is (re)built on the next tick.
+
+        Panel construction stays on the main thread inside :meth:`tick` — this
+        method runs on the hotkey thread and must not touch AppKit.
+        """
+        self._visible = True
             
     def tick(self) -> None:
         """Called periodically on the main thread during recording to update position & animation."""
         if self._panel is None:
+            if not self._visible:
+                return  # hidden: nothing to drive, and never rebuild off show()
             self._panel, self._view = self._build_panel()
             
         # Advance animation phase
@@ -174,34 +149,15 @@ class WaveformOverlayUI:
         screen_frame = NSScreen.screens()[0].frame()
         screen_width = screen_frame.size.width
         screen_height = screen_frame.size.height
-        
-        # Detect active focused element or text caret bounds
-        rect = get_focused_caret_rect()
-        if rect is not None:
-            cx, cy_ax, cw, ch = rect
-            # Convert Accessibility top-left origin coordinates to AppKit bottom-left origin coordinates
-            cy = screen_height - cy_ax
-            
-            # Position centered horizontally right below the caret/textbox
-            if cw < 6.0:  # fine caret line
-                x = cx - (self._panel_width / 2.0)
-            else:  # text selection or box
-                x = cx + (cw - self._panel_width) / 2.0
-            y = cy - ch - self._panel_height - 6.0
-        else:
-            # Fallback: anchor right next to the mouse cursor pointer
-            try:
-                mouse_pos = NSEvent.mouseLocation()
-                x = mouse_pos.x + 12.0
-                y = mouse_pos.y - self._panel_height - 12.0
-            except Exception:
-                x = (screen_width - self._panel_width) / 2.0
-                y = 55.0
-            
-        # Bound coordinates to screen boundaries
-        x = max(10.0, min(screen_width - self._panel_width - 10.0, x))
-        y = max(10.0, min(screen_height - self._panel_height - 10.0, y))
-        
+
+        # Caret sensing + placement live in caret.py (pure, given plain tuples).
+        x, y = place_panel(
+            get_focused_caret_rect(),
+            get_mouse_point(),
+            (screen_width, screen_height),
+            (self._panel_width, self._panel_height),
+        )
+
         new_origin = NSMakeRect(x, y, self._panel_width, self._panel_height)
         self._panel.setFrame_display_(new_origin, True)
         
@@ -210,8 +166,9 @@ class WaveformOverlayUI:
             NSDefaultRunLoopMode, NSDate.dateWithTimeIntervalSinceNow_(0.005)
         )
         
-    def close(self) -> None:
-        """Hide and release the floating panel when done."""
+    def hide(self) -> None:
+        """Hide and release the floating panel when done (idempotent)."""
+        self._visible = False
         if self._panel is not None:
             self._panel.orderOut_(None)
             # Pump the run loop so the window server immediately processes the window hide
@@ -226,14 +183,15 @@ class WaveformOverlayUI:
             
     def _build_panel(self):
         screen_frame = NSScreen.screens()[0].frame()
-        try:
-            mouse_pos = NSEvent.mouseLocation()
-            x = mouse_pos.x + 12.0
-            y = mouse_pos.y - self._panel_height - 12.0
-        except Exception:
-            x = (screen_frame.size.width - self._panel_width) / 2.0
-            y = 55.0
-            
+        screen_width = screen_frame.size.width
+        screen_height = screen_frame.size.height
+        # Initial anchor: no caret known yet, so the mouse fallback applies.
+        x, y = place_panel(
+            None,
+            get_mouse_point(),
+            (screen_width, screen_height),
+            (self._panel_width, self._panel_height),
+        )
         rect = NSMakeRect(x, y, self._panel_width, self._panel_height)
         
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
