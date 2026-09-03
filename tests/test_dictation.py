@@ -437,6 +437,12 @@ def _build_overlay_module(monkeypatch, *, caret_rect=None, screen=(1920, 1080),
         NSWindowStyleMaskBorderless=0,
         NSWindowStyleMaskNonactivatingPanel=0,
         NSBackingStoreBuffered=0,
+        # Frosted-material symbols (style B). Plain stand-ins: _build_panel is
+        # never executed headlessly, these only need to satisfy the import.
+        NSVisualEffectView=type("NSVisualEffectView", (), {}),
+        NSVisualEffectMaterialPopover=6,
+        NSVisualEffectBlendingModeBehindWindow=1,
+        NSVisualEffectStateActive=1,
     )
     fake_ax = types.SimpleNamespace(
         AXUIElementCreateSystemWide=lambda: None,

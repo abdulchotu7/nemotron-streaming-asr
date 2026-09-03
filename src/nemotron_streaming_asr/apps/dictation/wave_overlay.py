@@ -17,6 +17,16 @@ from AppKit import (
     NSWindowCollectionBehaviorCanJoinAllSpaces, NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel, NSBackingStoreBuffered
 )
+try:
+    # Frosted-material pill (style B). Absent on very old PyObjC — the view
+    # then falls back to painting its own opaque ink pill (style A look).
+    from AppKit import (
+        NSVisualEffectView, NSVisualEffectMaterialPopover,
+        NSVisualEffectBlendingModeBehindWindow, NSVisualEffectStateActive,
+    )
+    _EFFECT_VIEW_AVAILABLE = True
+except ImportError:
+    _EFFECT_VIEW_AVAILABLE = False
 from .caret import get_focused_caret_rect, get_mouse_point, place_panel
 from .display import RecordingDisplay
 
@@ -27,6 +37,10 @@ class WaveformView(NSView):
         if self:
             self._phase = 0.0
             self._volume = 0.15
+            # True only on the fallback path (no NSVisualEffectView): the view
+            # paints its own opaque ink pill. _build_panel flips this to False
+            # when a real frosted effect view sits behind.
+            self._draw_pill_background = True
         return self
         
     def setPhase_(self, phase):
@@ -37,20 +51,45 @@ class WaveformView(NSView):
         self._volume = volume
         self.setNeedsDisplay_(True)
         
+    def _light_appearance(self):
+        """True when the system appearance is light (bars/border go dark)."""
+        try:
+            return "dark" not in str(self.effectiveAppearance().name()).lower()
+        except Exception:
+            return False  # unknown: keep the established dark-glass look
+
     def drawRect_(self, rect):
         bounds = self.bounds()
         width = bounds.size.width
         height = bounds.size.height
+        light = self._light_appearance()
 
-        # 1. Pill — ink surface, hairline border (conservative: reads as system UI)
         pill_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
             bounds, height / 2.0, height / 2.0
         )
-        NSColor.colorWithRed_green_blue_alpha_(0.063, 0.063, 0.075, 0.92).set()
-        pill_path.fill()
-        NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.10).set()
+        if self._draw_pill_background:
+            # Fallback path only: opaque ink pill (no effect view behind).
+            NSColor.colorWithRed_green_blue_alpha_(0.063, 0.063, 0.075, 0.92).set()
+            pill_path.fill()
+
+        # 1. Hairline border + bright top inner edge (light catching the
+        # material). Tinted per appearance so the chrome reads on glass.
+        if light:
+            NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.12).set()
+        else:
+            NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.10).set()
         pill_path.setLineWidth_(1.0)
         pill_path.stroke()
+        edge_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            NSMakeRect(1.5, 1.5, width - 3.0, height - 3.0),
+            height / 2.0 - 1.5, height / 2.0 - 1.5,
+        )
+        if light:
+            NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.55).set()
+        else:
+            NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.07).set()
+        edge_path.setLineWidth_(1.0)
+        edge_path.stroke()
 
         # 2. Five monochrome equalizer bars, bell-curve weighted
         bar_width = 2.5
@@ -80,9 +119,12 @@ class WaveformView(NSView):
                 bar_rect, bar_width / 2.0, bar_width / 2.0
             )
 
-            # Monochrome white — center bar slightly brighter, outer bars softer
+            # Vibrancy-style bars: white on dark glass, ink on light glass.
             base_alpha = 0.6 + 0.4 * weight  # 0.6..1.0 across the row
-            NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, base_alpha).set()
+            if light:
+                NSColor.colorWithRed_green_blue_alpha_(0.11, 0.11, 0.14, base_alpha).set()
+            else:
+                NSColor.colorWithRed_green_blue_alpha_(1.0, 1.0, 1.0, base_alpha).set()
             bar_path.fill()
 
 
@@ -213,7 +255,23 @@ class WaveformOverlayUI(RecordingDisplay):
         panel.setFloatingPanel_(True)
         
         view = WaveformView.alloc().initWithFrame_(NSMakeRect(0, 0, self._panel_width, self._panel_height))
-        panel.contentView().addSubview_(view)
+        if _EFFECT_VIEW_AVAILABLE:
+            # Frosted pill: a Popover-material effect view supplies the blur +
+            # saturation (adapts to light/dark automatically); the waveform
+            # view draws only chrome + bars on top of it.
+            view._draw_pill_background = False
+            effect = NSVisualEffectView.alloc().initWithFrame_(
+                NSMakeRect(0, 0, self._panel_width, self._panel_height))
+            effect.setMaterial_(NSVisualEffectMaterialPopover)
+            effect.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            effect.setState_(NSVisualEffectStateActive)
+            effect.setWantsLayer_(True)
+            effect.layer().setCornerRadius_(self._panel_height / 2.0)
+            effect.layer().setMasksToBounds_(True)
+            effect.addSubview_(view)
+            panel.contentView().addSubview_(effect)
+        else:
+            panel.contentView().addSubview_(view)
         panel.orderFrontRegardless()
         
         return panel, view
