@@ -97,19 +97,9 @@ class StreamingBenchmark:
         ]
 
     def _sample_memory(self):
-        enc = self.session.encoder
-        audio = self.session.audio
         sample = {
             "wall_s": self.stats.wall_ns() / 1e9,
-            "waveform_samples": audio._length,
-            "pending_mel_frames": 0 if enc.pending is None else enc.pending.shape[1],
-            "mel_cache_frames": 0 if enc.mel_cache is None else enc.mel_cache.shape[1],
-            "attn_cache_elems": sum(
-                c.size for c in enc.attn_cache if c is not None
-            ),
-            "conv_cache_elems": sum(
-                c.size for c in enc.conv_cache if c is not None
-            ),
+            **self.session.memory_footprint(),
             "python_heap_bytes": (
                 tracemalloc.get_traced_memory()[0] if tracemalloc.is_tracing() else None
             ),

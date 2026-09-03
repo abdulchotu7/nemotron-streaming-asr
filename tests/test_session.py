@@ -61,6 +61,33 @@ def test_memory_bounded_during_long_session(tiny_model):
     assert max_held < audio.shape[0] / 10
 
 
+def test_memory_footprint_reports_session_state(tiny_model, seeded_audio):
+    """memory_footprint() is the single seam for sampling session state:
+    flat dict, identical keys before/after warmup, non-negative ints."""
+    session = NemotronStreamingSession(tiny_model, language="en-US")
+
+    cold = session.memory_footprint()
+    assert list(cold) == [
+        "waveform_samples",
+        "pending_mel_frames",
+        "mel_cache_frames",
+        "attn_cache_elems",
+        "conv_cache_elems",
+    ]
+    assert all(isinstance(v, int) and v >= 0 for v in cold.values())
+    assert cold["waveform_samples"] == 0
+
+    session.feed(seeded_audio[:BLOCK])
+    fed = session.memory_footprint()
+    assert fed["waveform_samples"] == BLOCK
+
+    list(session.step())
+    list(session.finish())
+    warm = session.memory_footprint()
+    assert list(warm) == list(cold)  # keys stable across warmup
+    assert all(isinstance(v, int) and v >= 0 for v in warm.values())
+
+
 def test_reset_starts_fresh_session(tiny_model, seeded_audio):
     np.random.seed(2)
     audio_b = (np.random.randn(int(3 * 16000)) * 0.08).astype(np.float32)

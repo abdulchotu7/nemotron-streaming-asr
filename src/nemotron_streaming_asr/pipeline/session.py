@@ -106,6 +106,23 @@ class NemotronStreamingSession:
         """First language tag the decoder emitted (e.g. ``"en-US"``), or None."""
         return self.decoder.detected_language
 
+    def memory_footprint(self):
+        """Current pipeline memory signals as a flat dict.
+
+        The single seam for sampling session state: owns the None-guards
+        around the encoder caches (``pending`` / ``mel_cache`` start empty,
+        cache lists hold ``None`` per layer until warmed). The benchmark
+        sampler reads this instead of reaching into stage privates.
+        """
+        enc = self.encoder
+        return {
+            "waveform_samples": self.audio._length,
+            "pending_mel_frames": 0 if enc.pending is None else enc.pending.shape[1],
+            "mel_cache_frames": 0 if enc.mel_cache is None else enc.mel_cache.shape[1],
+            "attn_cache_elems": sum(c.size for c in enc.attn_cache if c is not None),
+            "conv_cache_elems": sum(c.size for c in enc.conv_cache if c is not None),
+        }
+
     def step(self):
         """Process every mel chunk that is currently ready.
 
