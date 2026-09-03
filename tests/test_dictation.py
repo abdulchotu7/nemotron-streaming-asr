@@ -133,16 +133,16 @@ def test_rapid_stop_then_start_is_not_swallowed(tiny_model):
 
     app.start_recording()
     app.stop_recording()
-    worker1, session1 = app._worker, app._session
+    utt1, session1 = app._utterance, app._session
 
     app.start_recording()  # immediately: must not be swallowed
-    assert app._recording is True
-    assert app._worker is not worker1  # a fresh recording actually started
+    assert app._utterance.is_running
+    assert app._utterance is not utt1  # a fresh recording actually started
     assert app._session is not session1
 
     app.stop_recording()
-    app._worker.join(timeout=10)
-    assert app._recording is False
+    app._utterance.join(timeout=10)
+    assert not app._utterance.is_running
 
 
 # -------------------------------------------------------------- text insertion
@@ -254,20 +254,19 @@ def test_app_full_lifecycle_with_fake_recorder(tiny_model, seeded_audio):
     app = DictationApp(tiny_model, language="en-US", recorder=recorder,
                        insertion=_FakeInsertion(), hotkey=_FakeHotkey(),
                        insert=False, ui=ui)
-    assert app._recording is False
+    assert not app._utterance or not app._utterance.is_running
 
     app.start_recording()
-    assert app._recording is True
+    assert app._utterance.is_running
     assert recorder.started
     assert app._session is not None
 
     app.stop_recording()
-    assert app._worker is not None
-    app._worker.join(timeout=10)
+    assert app._utterance is not None
+    app._utterance.join(timeout=10)
 
-    assert app._recording is False
+    assert not app._utterance.is_running
     assert recorder.stopped
-    assert app._session is None  # session destroyed after the recording
     assert any("Ready for next recording" in l for l in ui_lines)
 
 
@@ -291,7 +290,7 @@ def test_recording_produces_live_transcript_updates(tiny_model, seeded_audio):
 
     app.start_recording()
     app.stop_recording()
-    app._worker.join(timeout=30)
+    app._utterance.join(timeout=30)
 
     assert recorder.started and recorder.stopped
     assert len(partials) > 0, "expected cumulative partial transcripts"
@@ -678,8 +677,12 @@ def test_display_show_hide_tracks_recording(tiny_model):
                        insert=False, ui=ui)
     app.start_recording()
     assert calls == ["show"]
+    # The worker thread may not be scheduled yet: recording state is
+    # synchronous, so an immediate pump must tick, never idle-hide.
+    app.pump_display()
+    assert calls == ["show"]
     app.stop_recording()
-    app._worker.join(timeout=10)
+    app._utterance.join(timeout=10)
     # stop_recording only signals; teardown is deferred to the main thread.
     assert calls == ["show"]
     app.pump_display()
@@ -723,7 +726,7 @@ def test_recording_loop_pushes_blocks_to_display(tiny_model, monkeypatch):
                        insertion=_FakeInsertion(), hotkey=_FakeHotkey(),
                        insert=False, ui=wo.WaveformOverlayUI())
     app.start_recording()
-    app._worker.join(timeout=10)
+    app._utterance.join(timeout=10)
     # At least 4 blocks were pushed (loud, quiet, loud, quiet).
     assert len(samples) >= 4
     # The loud block (RMS=0.5) must have been pushed before the quiet block

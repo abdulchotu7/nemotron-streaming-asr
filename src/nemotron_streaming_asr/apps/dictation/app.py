@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import threading
 import time
 from typing import Optional
 
@@ -37,6 +36,7 @@ from .hotkey import GlobalHotkey, PynputGlobalHotkey
 from .microphone import MicrophoneRecorder
 from .text_insertion import TextInsertionService
 from .transcript import LiveTranscriptController
+from .utterance import Utterance
 
 
 def build_display():
@@ -115,10 +115,8 @@ class DictationApp:
         self._hotkey.on_press = self.start_recording
         self._hotkey.on_release = self.stop_recording
 
-        self._recording = False
-        self._stop_event = threading.Event()
         self._session: Optional[NemotronStreamingSession] = None
-        self._worker: Optional[threading.Thread] = None
+        self._utterance: Optional[Utterance] = None
 
     @classmethod
     def build_default(
@@ -142,6 +140,10 @@ class DictationApp:
         )
 
     # ------------------------------------------------------------- lifecycle
+    @property
+    def _is_recording(self) -> bool:
+        return self._utterance is not None and self._utterance.is_running
+
     def pump_display(self) -> None:
         """Single main-thread display step: hide when idle, then tick.
 
@@ -149,7 +151,7 @@ class DictationApp:
         AppKit must only be touched on the main thread — ``stop_recording``
         runs on the hotkey listener thread.
         """
-        if not self._recording:
+        if not self._is_recording:
             self._ui.hide()
         self._ui.tick()
 
@@ -172,36 +174,36 @@ class DictationApp:
             pass
         finally:
             self.stop_recording()
-            if self._worker is not None:
-                self._worker.join(timeout=5)
+            if self._utterance is not None:
+                self._utterance.join(timeout=5)
             self._ui.hide()  # main thread here: safe to tear down directly
             self._hotkey.stop()
 
     def start_recording(self) -> None:
         """Hotkey pressed/tapped: create a fresh session and start capturing."""
-        if self._recording:
-            # A stop tap may have just landed and the worker could still be
-            # draining/finalizing. Wait for it so this tap is not swallowed
-            # (otherwise a quick stop->start needs a fourth tap).
-            worker = self._worker
-            if worker is not None and worker.is_alive():
-                worker.join(timeout=5.0)
-            if self._recording:  # still busy -> drop this tap
+        prev = self._utterance
+        if prev is not None and prev.is_running:
+            # A stop tap may have just landed and the previous utterance could
+            # still be draining/finalizing. Wait for it so this tap is not
+            # swallowed (otherwise a quick stop->start needs a fourth tap).
+            prev.join(timeout=5.0)
+            if prev.is_running:  # still busy -> drop this tap
                 return
-        self._recording = True
-        self._ui.show()
-        self._stop_event.clear()
         self._session = NemotronStreamingSession(
             self.model,
             language=self.language,
             att_context_size=self.att_context_size,
         )
-        self.transcript.clear()
-        self._recorder.start()
-        self._worker = threading.Thread(
-            target=self._recording_loop, name="dictation-recording", daemon=True
+        self._utterance = Utterance(
+            self._session,
+            self._recorder,
+            self.transcript,
+            self._ui,
+            self._insertion,
+            insert=self.insert,
         )
-        self._worker.start()
+        self._ui.show()
+        self._utterance.start()
 
     def stop_recording(self) -> None:
         """Hotkey released/tapped again: signal the worker to drain and finalize.
@@ -209,47 +211,8 @@ class DictationApp:
         Only signals; the display is hidden later on the main thread by
         :meth:`pump_display` (AppKit is main-thread-only).
         """
-        if self._recording:
-            self._stop_event.set()
-    # -------------------------------------------------------- recording loop
-    def _recording_loop(self) -> None:
-        self._ui.status("Listening...")
-        try:
-            while not self._stop_event.is_set():
-                block = self._recorder.poll(timeout=0.02)
-                if block is None:
-                    continue
-                self._ui.set_level(block)
-                self._feed_and_step(block)
-
-            # Stop capturing, then process every block already received.
-            self._recorder.stop()
-            for block in self._recorder.drain():
-                self._feed_and_step(block)
-
-            # End of utterance: flush the trailing partial chunk.
-            for result in self._session.finish():
-                self.transcript.update(result)
-        except Exception as e:  # keep the app alive on any pipeline error
-            self._ui.status(f"[dictation] error: {e!r}")
-        finally:
-            self._recorder.stop()
-            self._session = None
-            self._recording = False
-
-        final_text = self.transcript.current_text
-        if final_text:
-            self._ui.status(f"✓ {final_text}")
-            if self.insert:
-                self._insertion.insert(final_text)
-        else:
-            self._ui.status("(no speech detected)")
-        self._ui.status("Ready for next recording.")
-
-    def _feed_and_step(self, block) -> None:
-        self._session.feed(block)
-        for result in self._session.step():
-            self.transcript.update(result)
+        if self._utterance is not None:
+            self._utterance.stop()
 
 
 def main() -> None:

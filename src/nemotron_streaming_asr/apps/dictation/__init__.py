@@ -11,11 +11,13 @@ from .hotkey import GlobalHotkey, PynputGlobalHotkey
 from .microphone import MicrophoneRecorder
 from .text_insertion import TextInsertionService
 from .transcript import LiveTranscriptController
+from .utterance import Utterance
 
 __all__ = [
     "DictationApp",
     "ConsoleUI",
     "RecordingDisplay",
+    "Utterance",
     "build_display",
     "GlobalHotkey",
     "PynputGlobalHotkey",
